@@ -1,0 +1,34 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Flask
+instance/
+.webassets-cache
+*.db
+
+# Variáveis de ambiente (se usar depois)
+.env
+.env.local

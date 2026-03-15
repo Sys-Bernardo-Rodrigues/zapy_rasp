@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controle de Relés</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #121212; color: white; padding: 20px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; max-width: 400px; margin: 0 auto; }
+        .card { border: 1px solid #333; padding: 15px; border-radius: 10px; background: #1e1e1e; }
+        .btn { 
+            display: block; width: 100%; padding: 15px 0; margin-top: 10px;
+            border: none; border-radius: 5px; font-weight: bold; cursor: pointer;
+            text-decoration: none; color: white;
+        }
+        .LIGADO { background-color: #4CAF50; }
+        .DESLIGADO { background-color: #f44336; }
+    </style>
+</head>
+<body>
+    <h1>Painel de Automação</h1>
+    <div class="grid">
+        {% for id, estado in status.items() %}
+        <div class="card">
+            <h3>Relé {{ id }}</h3>
+            <p>Status: <strong>{{ estado }}</strong></p>
+            <a href="/toggle/{{ id }}" class="btn {{ estado }}">
+                {{ "DESLIGAR" if estado == "LIGADO" else "LIGAR" }}
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
