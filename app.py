@@ -5,7 +5,8 @@ import threading
 import time
 
 from dotenv import load_dotenv
-from flask import Flask, render_template, redirect, url_for, request, jsonify
+from flask import Flask, render_template, redirect, url_for, request, jsonify, session
+from functools import wraps
 
 load_dotenv()
 from gpiozero import OutputDevice, DigitalInputDevice
@@ -16,6 +17,17 @@ from config_env import read_config, get_config_for_display, write_config
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 app = Flask(__name__, template_folder='painel_rele/templates')
+app.secret_key = os.environ.get("ZAPY_SECRET_KEY", "dev-zapy-secret")
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login", next=request.path))
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 # Configuração dos Relés (Pinos BCM: 5, 6, 13, 19 - canais 1 a 4)
 reles = {
@@ -87,6 +99,7 @@ def _sensor_status() -> dict[str, str]:
 
 
 @app.route('/')
+@login_required
 def index():
     status = {rid: ("LIGADO" if r.value else "DESLIGADO") for rid, r in reles.items()}
     cfg = read_config()
@@ -103,6 +116,39 @@ def index():
         sensor_pins=SENSOR_PINS,
         sensor_pins_physical=SENSOR_PINS_PHYSICAL,
     )
+
+
+@app.route('/config')
+@login_required
+def config_page():
+    """Tela dedicada de configuração do Zapy/ZAccess."""
+    return render_template('config.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        username = (request.form.get('username') or "").strip()
+        password = (request.form.get('password') or "").strip()
+        if username == "admin" and password == "zroot":
+            session["logged_in"] = True
+            next_url = request.args.get("next") or url_for("index")
+            return redirect(next_url)
+        error = "Usuário ou senha inválidos."
+    return render_template('login.html', error=error)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+@app.route('/health')
+@login_required
+def health_page():
+    return render_template('health.html')
 
 
 @app.route('/api/sensors')

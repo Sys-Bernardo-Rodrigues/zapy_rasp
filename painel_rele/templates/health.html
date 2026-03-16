@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zapy – Saúde do dispositivo</title>
+    <link rel="icon" type="image/png" href="https://img.icons8.com/color-glass/48/thunderbolt.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #f3f4f6;
+            --bg-elevated: #ffffff;
+            --border-subtle: #e5e7eb;
+            --text: #111827;
+            --text-muted: #6b7280;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Outfit', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            background: radial-gradient(circle at top left, #eef2ff 0, #f9fafb 40%, #e5e7eb 100%);
+            color: var(--text);
+            margin: 0;
+            min-height: 100vh;
+        }
+        .layout {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        .topbar {
+            height: 56px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            background: rgba(249, 250, 251, 0.9);
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 20;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .brand-logo {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            background: conic-gradient(from 140deg, #8b5cf6, #a855f7, #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: #020617;
+        }
+        .topbar-title {
+            display: flex;
+            flex-direction: column;
+        }
+        .topbar-title span:first-child {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .topbar-title span:last-child {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .topbar-right a {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            margin-left: 12px;
+        }
+        .shell {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 18px 16px 28px;
+        }
+        .panel {
+            background: var(--bg-elevated);
+            border-radius: 12px;
+            border: 1px solid var(--border-subtle);
+            padding: 14px 14px 16px;
+        }
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .panel-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .metric {
+            font-size: 0.85rem;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px dashed var(--border-subtle);
+        }
+        .metric span.label {
+            display: block;
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 2px;
+        }
+        .metric span.value {
+            font-weight: 600;
+        }
+        .hint {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <header class="topbar">
+            <div class="topbar-left">
+                <div class="brand-logo">Z</div>
+                <div class="topbar-title">
+                    <span>Saúde do dispositivo</span>
+                    <span>Zapy – Raspberry Pi</span>
+                </div>
+            </div>
+            <div class="topbar-right">
+                <a href="/">← Voltar para o painel</a>
+            </div>
+        </header>
+
+        <main class="shell">
+            <section class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Resumo do sistema</span>
+                </div>
+                <div class="grid">
+                    <div class="metric">
+                        <span class="label">Hostname</span>
+                        <span class="value" id="hostValue">—</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">Sistema</span>
+                        <span class="value" id="platformValue">—</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">CPU</span>
+                        <span class="value" id="cpuValue">—</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">Memória</span>
+                        <span class="value" id="memValue">—</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">Disco</span>
+                        <span class="value" id="diskValue">—</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">Uptime</span>
+                        <span class="value" id="uptimeValue">—</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">Temp. CPU</span>
+                        <span class="value" id="tempValue">—</span>
+                    </div>
+                </div>
+                <p class="hint">Em breve podemos ligar esta tela à API de saúde do ZAccess. Por enquanto, os valores podem ser preenchidos via `/api/health-local` se você decidir implementar.</p>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
+
