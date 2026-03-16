@@ -14,10 +14,10 @@ import socketio
 logger = logging.getLogger(__name__)
 
 NAMESPACE = "/devices"
-HEARTBEAT_INTERVAL = 20  # segundos (servidor espera ~90s; enviar bem antes)
-INPUT_PUSH_INTERVAL = 5  # segundos entre envio do estado dos sensores/botões para o ZAccess
-RECONNECT_DELAY = 10
-RECONNECT_MAX_DELAY = 300
+HEARTBEAT_INTERVAL = 8   # segundos (servidor timeout ~90s; enviar bem antes para evitar desconexão)
+INPUT_PUSH_INTERVAL = 30 # backup: reenvio periódico; mudanças reais são enviadas na hora via callback
+RECONNECT_DELAY = 5
+RECONNECT_MAX_DELAY = 120
 
 
 def _state_from_value(value: bool) -> str:
@@ -90,6 +90,18 @@ def run_zaccess_client(
                 except Exception as e:
                     logger.debug("ZAccess: input push %s - %s", sid, e)
 
+        def _emit_input_state(input_id: str, state: str):
+            """Envia um input:state-update imediato (callback de GPIO)."""
+            try:
+                if sio.connected:
+                    sio.emit(
+                        "input:state-update",
+                        {"inputId": input_id, "state": state},
+                        namespace=NAMESPACE,
+                    )
+            except Exception:
+                pass
+
         @sio.on("device:config", namespace=NAMESPACE)
         def device_config(data):
             relay_id_by_channel.clear()
@@ -106,6 +118,19 @@ def run_zaccess_client(
                     input_id_by_gpio[int(gpio)] = str(iid)
             logger.info("ZAccess: config recebida, relés: %s, inputs: %s", list(relay_id_by_channel.keys()), list(input_id_by_gpio.keys()))
             push_input_states()
+            # Callbacks: envio instantâneo ao mudar GPIO (activated=inactive, deactivated=active para ZAccess)
+            if sensores and sensor_pins:
+                for sid, dev in sensores.items():
+                    pin = sensor_pins.get(sid)
+                    input_id = input_id_by_gpio.get(pin) if pin is not None else None
+                    if not input_id or not hasattr(dev, "when_activated"):
+                        continue
+                    iid = str(input_id)
+                    try:
+                        dev.when_activated = lambda i=iid: _emit_input_state(i, "inactive")
+                        dev.when_deactivated = lambda i=iid: _emit_input_state(i, "active")
+                    except Exception as e:
+                        logger.debug("ZAccess: callback input %s - %s", sid, e)
 
         pulse_timers: dict[str, threading.Timer] = {}
         pulse_timers_lock = threading.Lock()
