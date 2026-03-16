@@ -178,8 +178,8 @@ def api_restart():
 
 
 if __name__ == '__main__':
-    # Conecta ao ZAccess se ZACCESS_SERVER_URL e ZACCESS_DEVICE_SERIAL estiverem definidos
-    start_zaccess_client_in_background(reles)
+    # Conecta ao ZAccess; envia relés e estado dos sensores/botões (inputs)
+    start_zaccess_client_in_background(reles, sensores=sensores, sensor_pins=SENSOR_PINS)
     # Painel local (porta do .env ou 3080)
     port_str = (os.environ.get("PORT") or "3080").strip()
     port = int(port_str) if port_str else 3080

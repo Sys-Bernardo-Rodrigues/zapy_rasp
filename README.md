@@ -84,7 +84,13 @@ Para este dispositivo ser **controlado pelo ZAccess** (painel admin ou app):
      - **Pino GPIO**: 5, 6, 13 e 19 (conforme o hardware).
    - Os nomes e tipos (porta, luz, etc.) são livres.
 
-3. **Configure as variáveis de ambiente**
+3. **Cadastre os 8 inputs (sensores + botões) no dispositivo**
+   - Para o Zapy enviar o estado dos sensores/botões para o ZAccess, crie 8 **inputs** no mesmo dispositivo com os **mesmos GPIO** que o Zapy usa:
+     - Sensores magnéticos (porta): **GPIO 17, 27, 22, 23** — tipo `door_sensor`.
+     - Botões: **GPIO 24, 25, 26, 4** — tipo `button`.
+   - O Zapy envia `input:state-update` com estado `active` (aberto/pressionado) ou `inactive` (fechado/solto) a cada 5 s e ao conectar.
+
+4. **Configure as variáveis de ambiente**
    - Copie o exemplo e ajuste:
    ```bash
    cp .env.example .env
@@ -94,7 +100,7 @@ Para este dispositivo ser **controlado pelo ZAccess** (painel admin ou app):
    - `ZACCESS_DEVICE_SERIAL` = mesmo número de série cadastrado no passo 1
    - `ZACCESS_DEVICE_TOKEN` = só se tiver definido token no dispositivo
 
-4. **Carregue o `.env` e inicie o app**
+5. **Carregue o `.env` e inicie o app**
    ```bash
    export $(grep -v '^#' .env | xargs)
    python app.py

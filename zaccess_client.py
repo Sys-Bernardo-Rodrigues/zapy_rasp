@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 
 NAMESPACE = "/devices"
 HEARTBEAT_INTERVAL = 20  # segundos (servidor espera ~90s; enviar bem antes)
-RECONNECT_DELAY = 10  # segundos antes de tentar reconectar
-RECONNECT_MAX_DELAY = 300  # cap do backoff (5 min)
+INPUT_PUSH_INTERVAL = 5  # segundos entre envio do estado dos sensores/botões para o ZAccess
+RECONNECT_DELAY = 10
+RECONNECT_MAX_DELAY = 300
 
 
 def _state_from_value(value: bool) -> str:
@@ -29,20 +30,23 @@ def run_zaccess_client(
     serial_number: str,
     reles: dict,
     auth_token: str | None = None,
+    sensores: dict | None = None,
+    sensor_pins: dict | None = None,
 ):
     """
-    Conecta ao ZAccess via Socket.IO (namespace /devices) e reage a relay:toggle.
-    Reconecta automaticamente quando a conexão cai. Executa em thread separada.
+    Conecta ao ZAccess via Socket.IO (namespace /devices).
+    Envia relay:state-update e input:state-update (sensores/botões) quando configurado.
     """
     auth = {"serialNumber": serial_number}
     if auth_token:
         auth["authToken"] = auth_token
 
-    # Mapeamento channel (1-4) -> relayId (ObjectId do ZAccess) para relay:state-update
     relay_id_by_channel: dict[int, str] = {}
+    input_id_by_gpio: dict[int, str] = {}
     reconnect_delay = RECONNECT_DELAY
 
     while True:
+        input_push_stop = threading.Event()
         sio = socketio.Client(logger=False, engineio_logger=False)
 
         @sio.event(namespace=NAMESPACE)
@@ -63,6 +67,29 @@ def run_zaccess_client(
         def error(data):
             logger.error("ZAccess: erro do servidor - %s", data)
 
+        def push_input_states():
+            """Envia estado de todos os sensores/botões para o ZAccess (input:state-update)."""
+            if not sensores or not sensor_pins or not sio.connected:
+                return
+            for sid, pin in sensor_pins.items():
+                if sid not in sensores:
+                    continue
+                input_id = input_id_by_gpio.get(pin)
+                if not input_id:
+                    continue
+                try:
+                    val = getattr(sensores[sid], "value", None)
+                    if val is None:
+                        continue
+                    state = "inactive" if val else "active"
+                    sio.emit(
+                        "input:state-update",
+                        {"inputId": input_id, "state": state},
+                        namespace=NAMESPACE,
+                    )
+                except Exception as e:
+                    logger.debug("ZAccess: input push %s - %s", sid, e)
+
         @sio.on("device:config", namespace=NAMESPACE)
         def device_config(data):
             relay_id_by_channel.clear()
@@ -71,7 +98,14 @@ def run_zaccess_client(
                 rid = r.get("id")
                 if ch is not None and rid is not None:
                     relay_id_by_channel[int(ch)] = str(rid)
-            logger.info("ZAccess: config recebida, relés por canal: %s", relay_id_by_channel)
+            input_id_by_gpio.clear()
+            for i in data.get("inputs") or []:
+                gpio = i.get("gpioPin")
+                iid = i.get("id")
+                if gpio is not None and iid is not None:
+                    input_id_by_gpio[int(gpio)] = str(iid)
+            logger.info("ZAccess: config recebida, relés: %s, inputs: %s", list(relay_id_by_channel.keys()), list(input_id_by_gpio.keys()))
+            push_input_states()
 
         pulse_timers: dict[str, threading.Timer] = {}
         pulse_timers_lock = threading.Lock()
@@ -158,6 +192,15 @@ def run_zaccess_client(
                 except Exception as e:
                     logger.debug("ZAccess: heartbeat falhou - %s", e)
 
+        def input_push_loop():
+            """Envia estado dos inputs a cada INPUT_PUSH_INTERVAL."""
+            while not input_push_stop.is_set():
+                input_push_stop.wait(timeout=INPUT_PUSH_INTERVAL)
+                if input_push_stop.is_set():
+                    break
+                if sio.connected:
+                    push_input_states()
+
         try:
             sio.connect(
                 server_url,
@@ -167,11 +210,15 @@ def run_zaccess_client(
             )
             t = threading.Thread(target=heartbeat_loop, daemon=True)
             t.start()
+            if sensores and sensor_pins:
+                t_in = threading.Thread(target=input_push_loop, daemon=True)
+                t_in.start()
             sio.wait()
         except Exception as e:
             logger.warning("ZAccess: conexão encerrada - %s", e)
         finally:
             heartbeat_stop.set()
+            input_push_stop.set()
             if sio.connected:
                 try:
                     sio.disconnect()
@@ -183,10 +230,14 @@ def run_zaccess_client(
         reconnect_delay = min(reconnect_delay * 2, RECONNECT_MAX_DELAY)
 
 
-def start_zaccess_client_in_background(reles: dict) -> threading.Thread | None:
+def start_zaccess_client_in_background(
+    reles: dict,
+    sensores: dict | None = None,
+    sensor_pins: dict | None = None,
+) -> threading.Thread | None:
     """
-    Inicia o cliente ZAccess em uma thread daemon, se variáveis de ambiente estiverem definidas.
-    Retorna a thread ou None se não configurado.
+    Inicia o cliente ZAccess em uma thread daemon.
+    Se sensores e sensor_pins forem passados, envia input:state-update para o ZAccess.
     """
     url = os.environ.get("ZACCESS_SERVER_URL", "").strip()
     serial = os.environ.get("ZACCESS_DEVICE_SERIAL", "").strip()
@@ -198,7 +249,12 @@ def start_zaccess_client_in_background(reles: dict) -> threading.Thread | None:
     token = os.environ.get("ZACCESS_DEVICE_TOKEN", "").strip() or None
 
     def run():
-        run_zaccess_client(url, serial, reles, auth_token=token)
+        run_zaccess_client(
+            url, serial, reles,
+            auth_token=token,
+            sensores=sensores,
+            sensor_pins=sensor_pins,
+        )
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
