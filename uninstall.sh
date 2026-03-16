@@ -20,14 +20,16 @@ for arg in "$@"; do
   esac
 done
 
-# --- Remover serviço (requer sudo) ---
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "[zapy] Para remover o serviço é necessário sudo. Executando: sudo $0 $*"
+  echo "[zapy] Removendo serviço (sudo)..."
   exec sudo "$0" "$@"
 fi
 
+# --- Parar e desabilitar serviço ---
 if systemctl is-enabled "$SERVICE_NAME" &>/dev/null; then
-  echo "[zapy] Parando e desabilitando serviço $SERVICE_NAME..."
+  echo "[zapy] Parando e desabilitando $SERVICE_NAME..."
   systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   systemctl disable "$SERVICE_NAME"
 fi
@@ -38,13 +40,12 @@ if [[ -f "$UNIT_FILE" ]]; then
   systemctl daemon-reload
   echo "[zapy] Serviço removido: $UNIT_FILE"
 else
-  echo "[zapy] Arquivo de serviço não encontrado: $UNIT_FILE"
+  echo "[zapy] Serviço não encontrado: $UNIT_FILE"
 fi
 
 # --- Purge: remover .venv ---
-INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if $PURGE && [[ -d "$INSTALL_DIR/.venv" ]]; then
-  echo "[zapy] Removendo ambiente virtual (.venv)..."
+  echo "[zapy] Removendo .venv..."
   rm -rf "$INSTALL_DIR/.venv"
   echo "[zapy] .venv removido."
 fi

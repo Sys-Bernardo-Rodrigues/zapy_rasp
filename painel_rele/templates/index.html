@@ -90,6 +90,10 @@
         }
         .badge.LIGADO { background: var(--on-bg); color: var(--on); }
         .badge.DESLIGADO { background: var(--off-bg); color: var(--off); }
+        .badge.Aberto { background: rgba(244, 63, 94, 0.2); color: #f87171; }
+        .badge.Fechado { background: var(--on-bg); color: var(--on); }
+        .badge.Pressionado { background: var(--on-bg); color: var(--on); }
+        .badge.Solto { background: rgba(244, 63, 94, 0.2); color: #f87171; }
         .btn-toggle {
             display: block;
             width: 100%;
@@ -114,6 +118,12 @@
         .btn-toggle.loading { pointer-events: none; opacity: 0.7; }
         .card-pulse { font-size: 0.75rem; color: var(--text-muted); margin-top: 8px; }
         .card-pulse.on { color: var(--accent); }
+        .sensor-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+        .sensor-card.Aberto { border-color: rgba(244, 63, 94, 0.35); }
+        .sensor-card.Fechado { border-color: rgba(16, 185, 129, 0.35); }
+        .sensor-card.Pressionado { border-color: rgba(16, 185, 129, 0.35); }
+        .sensor-card.Solto { border-color: rgba(244, 63, 94, 0.35); }
+        .sensor-card .pin-info { font-size: 0.7rem; color: var(--text-muted); margin-top: 6px; margin-bottom: 0; }
 
         /* Config */
         .config-section {
@@ -220,6 +230,34 @@
             </div>
             {% endfor %}
         </div>
+
+        <p class="section-title">Sensores magnéticos (Reed Switch NA)</p>
+        <div class="grid" id="sensorGrid">
+            {% for id, estado in sensor_status_reed.items() %}
+            <div class="sensor-card {{ estado }}" data-sensor="{{ id }}">
+                <div class="card-header">
+                    <span class="card-title">Sensor {{ id }}</span>
+                    <span class="badge {{ estado }}">{{ estado }}</span>
+                </div>
+                <p class="pin-info">GPIO BCM {{ sensor_pins[id] }} · Pino físico {{ sensor_pins_physical[id] }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        <p style="font-size:0.75rem; color:var(--text-muted); margin-top:6px; margin-bottom:16px;">Reed: um terminal no pino, outro no GND. Ímã perto = Fechado.</p>
+
+        <p class="section-title">Botões</p>
+        <div class="grid" id="buttonGrid">
+            {% for id, estado in sensor_status_buttons.items() %}
+            <div class="sensor-card {{ estado }}" data-sensor="{{ id }}">
+                <div class="card-header">
+                    <span class="card-title">Botão {{ id }}</span>
+                    <span class="badge {{ estado }}">{{ estado }}</span>
+                </div>
+                <p class="pin-info">GPIO BCM {{ sensor_pins[id] }} · Pino físico {{ sensor_pins_physical[id] }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        <p style="font-size:0.75rem; color:var(--text-muted); margin-top:6px; margin-bottom:24px;">Botão: um terminal no pino, outro no GND. Pressionado = circuito fechado.</p>
 
         <section class="config-section open" id="configSection">
             <div class="config-head" id="configToggle" aria-expanded="true">
@@ -395,6 +433,25 @@
     });
 
     loadConfig();
+
+    // Atualizar estado dos sensores a cada 2 s
+    function refreshSensors() {
+        fetch('/api/sensors')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                for (var id in data) {
+                    var card = document.querySelector('.sensor-card[data-sensor="' + id + '"]');
+                    if (!card) continue;
+                    var newState = data[id];
+                    card.classList.remove('Aberto', 'Fechado');
+                    card.classList.add(newState);
+                    var badge = card.querySelector('.badge');
+                    if (badge) { badge.textContent = newState; badge.className = 'badge ' + newState; }
+                }
+            })
+            .catch(function() {});
+    }
+    setInterval(refreshSensors, 2000);
 })();
     </script>
 </body>

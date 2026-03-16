@@ -112,6 +112,38 @@ O cliente Socket.IO conecta ao namespace `/devices` do ZAccess, envia **heartbea
 | `ZACCESS_DEVICE_TOKEN` | Token do dispositivo (opcional) |
 | `PORT` | Porta do painel web local (padrão: 3080) |
 
+## Hardware – pinos (BCM / físico no header 40 v2/v3)
+
+**Relés (saídas)**  
+| Canal | BCM | Pino físico |
+|-------|-----|-------------|
+| 1     | 5   | 29          |
+| 2     | 6   | 31          |
+| 3     | 13  | 33          |
+| 4     | 19  | 35          |
+
+**Sensores magnéticos Reed Switch NA (1–4)**  
+Um terminal do reed no GPIO, outro no **GND**. Ímã perto = **Fechado**, ímã longe = **Aberto**.
+
+| Sensor | BCM | Pino físico |
+|--------|-----|-------------|
+| 1      | 17  | 11          |
+| 2      | 27  | 13          |
+| 3      | 22  | 15          |
+| 4      | 23  | 16          |
+
+**Botões (5–8)**  
+Um terminal do botão no GPIO, outro no **GND**. Pressionado = **Pressionado**, solto = **Solto**.
+
+| Botão | BCM | Pino físico |
+|-------|-----|-------------|
+| 5     | 24  | 18          |
+| 6     | 25  | 22          |
+| 7     | 26  | 37          |
+| 8     | 4   | 7           |
+
+Se o serviço falhar ao iniciar por causa dos sensores (erro em `/sys/class/gpio` ou `Invalid argument`), o Zapy passa a usar **modo mock** (sensores sempre “Fechado”) e o restante funciona. Para os sensores reais funcionarem, o usuário que roda o serviço precisa ter acesso ao GPIO: `sudo usermod -aG gpio zaccess` (troque `zaccess` pelo usuário) e depois fazer logout/login ou reiniciar. Para usar o pin factory `lgpio` (recomendado no Raspberry Pi): instale no sistema `sudo apt install liblgpio-dev` e no venv do Zapy `.venv/bin/pip install lgpio` (não use o `pip` do sistema).
+
 ## Estrutura
 
 - `app.py` – Flask: painel web e inicialização do cliente ZAccess
