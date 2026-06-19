@@ -1,7 +1,7 @@
 """
 Cliente Socket.IO para conectar este dispositivo (zapy) ao servidor ZAccess.
-Escuta o evento relay:toggle e envia relay:state-update e heartbeat.
-Reconecta automaticamente quando a conexão cai.
+Escuta relay:toggle; envia relay:state-update, input:state-update e heartbeat (telemetria).
+A conexão em si é mantida pelo ping nativo do Socket.IO; heartbeat é opcional/complementar.
 Ref: https://github.com/Sys-Bernardo-Rodrigues/Projeto-ZAccess
 """
 import os
@@ -14,7 +14,7 @@ import socketio
 logger = logging.getLogger(__name__)
 
 NAMESPACE = "/devices"
-HEARTBEAT_INTERVAL = 8   # segundos (servidor timeout ~90s; enviar bem antes para evitar desconexão)
+HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.IO)
 INPUT_PUSH_INTERVAL = 30 # backup: reenvio periódico; mudanças reais são enviadas na hora via callback
 RECONNECT_DELAY = 5
 RECONNECT_MAX_DELAY = 120
@@ -47,13 +47,32 @@ def run_zaccess_client(
 
     while True:
         input_push_stop = threading.Event()
+        heartbeat_stop = threading.Event()
+        session_started = time.monotonic()
         sio = socketio.Client(logger=False, engineio_logger=False)
+
+        def emit_heartbeat() -> bool:
+            """Heartbeat de aplicação (telemetria). Não substitui o ping nativo do Socket.IO."""
+            if not sio.connected:
+                return False
+            try:
+                sio.emit(
+                    "heartbeat",
+                    {"uptimeSec": int(time.monotonic() - session_started)},
+                    namespace=NAMESPACE,
+                )
+                return True
+            except Exception as e:
+                logger.warning("ZAccess: heartbeat falhou - %s", e)
+                return False
 
         @sio.event(namespace=NAMESPACE)
         def connect():
-            nonlocal reconnect_delay
-            reconnect_delay = RECONNECT_DELAY  # reset backoff após conectar
+            nonlocal reconnect_delay, session_started
+            reconnect_delay = RECONNECT_DELAY
+            session_started = time.monotonic()
             logger.info("ZAccess: conectado ao servidor %s", server_url)
+            emit_heartbeat()
 
         @sio.event(namespace=NAMESPACE)
         def connect_error(data):
@@ -203,28 +222,22 @@ def run_zaccess_client(
                     pass
             logger.info("ZAccess: relé canal %s -> %s", channel, state)
 
-        heartbeat_stop = threading.Event()
-
         def heartbeat_loop():
             while not heartbeat_stop.is_set():
-                heartbeat_stop.wait(timeout=HEARTBEAT_INTERVAL)
-                if heartbeat_stop.is_set():
+                if heartbeat_stop.wait(timeout=HEARTBEAT_INTERVAL):
                     break
                 if not sio.connected:
-                    break
-                try:
-                    sio.emit("heartbeat", {}, namespace=NAMESPACE)
-                except Exception as e:
-                    logger.debug("ZAccess: heartbeat falhou - %s", e)
+                    continue
+                emit_heartbeat()
 
         def input_push_loop():
             """Envia estado dos inputs a cada INPUT_PUSH_INTERVAL."""
             while not input_push_stop.is_set():
-                input_push_stop.wait(timeout=INPUT_PUSH_INTERVAL)
-                if input_push_stop.is_set():
+                if input_push_stop.wait(timeout=INPUT_PUSH_INTERVAL):
                     break
-                if sio.connected:
-                    push_input_states()
+                if not sio.connected:
+                    continue
+                push_input_states()
 
         try:
             sio.connect(
