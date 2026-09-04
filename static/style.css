@@ -234,8 +234,8 @@ body {
 .auth-brand .glow-1, .auth-brand .glow-2 { position: absolute; border-radius: 999px; pointer-events: none; }
 .auth-brand .glow-1 { top: -70px; right: -70px; width: 280px; height: 280px; background: radial-gradient(circle, rgba(168, 85, 247, .35), transparent 70%); }
 .auth-brand .glow-2 { bottom: -90px; left: -70px; width: 320px; height: 320px; background: radial-gradient(circle, rgba(30, 11, 75, .55), transparent 70%); }
-.auth-brand .brand-mark { position: relative; display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-weight: 700; font-size: 1.05rem; }
-.auth-brand .brand-mark .logo-square { width: 34px; height: 34px; border-radius: var(--radius-lg); display: block; }
+.auth-brand .brand-mark { position: relative; }
+.auth-brand .brand-mark .brand-wordmark { height: 30px; width: auto; display: block; }
 .auth-brand h1 { position: relative; max-width: 340px; font-family: var(--font-display); font-size: 26px; line-height: 1.25; font-weight: 700; margin: 0; }
 .auth-brand ul { position: relative; margin: 20px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; }
 .auth-brand li { display: flex; align-items: flex-start; gap: 10px; font-size: 0.86rem; color: rgba(255, 255, 255, 0.85); }
