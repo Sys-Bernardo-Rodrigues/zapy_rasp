@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zapy – Dispositivo ZAccess</title>
-    <link rel="icon" type="image/png" href="https://img.icons8.com/color-glass/48/thunderbolt.png">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -18,7 +18,7 @@
     <div class="layout">
         <header class="topbar">
             <div class="topbar-left">
-                <div class="brand-logo">Z</div>
+                <img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="Zapy">
                 <div class="topbar-title">
                     <span>Zapy – Dispositivo ZAccess</span>
                     <span>Painel local do dispositivo físico</span>

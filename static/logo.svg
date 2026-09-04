@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="zapy-brand" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#zapy-brand)"/>
+  <rect x="40" y="40" width="432" height="432" rx="88" fill="none" stroke="#FFFFFF" stroke-width="4" opacity="0.18"/>
+  <text x="256" y="288" text-anchor="middle" dominant-baseline="middle"
+        font-family="'Helvetica Neue', Arial, sans-serif" font-weight="800"
+        font-size="300" fill="#FFFFFF" letter-spacing="-4">Z</text>
+</svg>
