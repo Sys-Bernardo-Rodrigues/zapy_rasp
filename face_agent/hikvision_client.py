@@ -52,7 +52,6 @@ class HikvisionTerminal:
 class HikvisionClient:
     def __init__(self, terminal: HikvisionTerminal):
         self.terminal = terminal
-        self._auth = HTTPDigestAuth(terminal.username, terminal.password)
         self._consec_auth_failures = 0
         self._circuit_open_until = 0.0
 
@@ -84,9 +83,17 @@ class HikvisionClient:
         elif json_body is not None:
             kwargs["json"] = json_body
 
+        # Instância nova de HTTPDigestAuth a cada chamada, de propósito: reaproveitar uma
+        # instância entre requisições faz o `requests` mandar Authorization preventivo com
+        # o nonce cacheado e `nc` incrementado (otimização normal do RFC 2617) — mas esse
+        # firmware não aceita isso na rota multipart (Intelligent/FDLib/FaceDataRecord) e
+        # simplesmente reseta a conexão, sem responder 401. Forçar um desafio completo em
+        # toda chamada custa um round-trip a mais, mas é o que funciona contra esse device
+        # (validado ao vivo, reprodutível: cache de nonce = reset; sem cache = sempre OK).
+        auth = HTTPDigestAuth(self.terminal.username, self.terminal.password)
         try:
             res = requests.request(
-                method, url, auth=self._auth, params=params,
+                method, url, auth=auth, params=params,
                 verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS, **kwargs,
             )
         except requests.RequestException as e:
