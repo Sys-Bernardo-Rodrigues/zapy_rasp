@@ -13,6 +13,8 @@ from gpiozero import OutputDevice, DigitalInputDevice
 
 from zaccess_client import start_zaccess_client_in_background
 from config_env import read_config, get_config_for_display, write_config
+import face_terminals_store
+from face_agent import FaceProvisioningError, create_face_client
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -123,6 +125,65 @@ def index():
 def config_page():
     """Tela dedicada de configuração do Zapy/ZAccess."""
     return render_template('config.html')
+
+
+@app.route('/face-terminals')
+@login_required
+def face_terminals_page():
+    """Cadastro dos terminais faciais (Hikvision/Intelbras) que este zapy fala diretamente."""
+    return render_template('face_terminals.html')
+
+
+@app.route('/api/face-terminals', methods=['GET'])
+@login_required
+def api_face_terminals_list():
+    return jsonify([face_terminals_store.for_display(t) for t in face_terminals_store.list_terminals()])
+
+
+@app.route('/api/face-terminals', methods=['POST'])
+@login_required
+def api_face_terminals_create():
+    terminal = face_terminals_store.create_terminal(request.get_json() or {})
+    return jsonify(face_terminals_store.for_display(terminal)), 201
+
+
+@app.route('/api/face-terminals/<terminal_id>', methods=['PUT'])
+@login_required
+def api_face_terminals_update(terminal_id):
+    terminal = face_terminals_store.update_terminal(terminal_id, request.get_json() or {})
+    if terminal is None:
+        return jsonify({"success": False, "message": "terminal não encontrado"}), 404
+    return jsonify(face_terminals_store.for_display(terminal))
+
+
+@app.route('/api/face-terminals/<terminal_id>', methods=['DELETE'])
+@login_required
+def api_face_terminals_delete(terminal_id):
+    if not face_terminals_store.delete_terminal(terminal_id):
+        return jsonify({"success": False, "message": "terminal não encontrado"}), 404
+    return jsonify({"success": True})
+
+
+@app.route('/api/face-terminals/<terminal_id>/test', methods=['POST'])
+@login_required
+def api_face_terminals_test(terminal_id):
+    """Chama um endpoint leve e sem efeito colateral (system/info ou deviceInfo) só pra
+    confirmar que dá pra falar com o terminal com essas credenciais."""
+    terminal = face_terminals_store.get_terminal(terminal_id)
+    if terminal is None:
+        return jsonify({"success": False, "message": "terminal não encontrado"}), 404
+    try:
+        client = create_face_client(
+            terminal["vendor"], host=terminal["host"], port=terminal["port"],
+            username=terminal["username"], password=terminal["password"],
+            https=terminal["https"], verify_tls=terminal["verify_tls"],
+            relay_level=terminal.get("relay_level", 0),
+        )
+        return jsonify({"success": True, "info": client.check_health()})
+    except FaceProvisioningError as e:
+        return jsonify({"success": False, "message": str(e)}), 502
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route('/login', methods=['GET', 'POST'])

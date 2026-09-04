@@ -3,11 +3,14 @@ Self-check do face_agent — sem terminal físico. Mocka `requests` pra validar 
 protocolo (envelope Intelbras, branches create/update, XML sem format=json no
 Hikvision, circuit breaker de auth). Rodar: python -m unittest test_face_agent -v
 """
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
 import requests
 
+import face_terminals_store
 from face_agent.errors import FaceProvisioningError
 from face_agent.face_client_factory import create_face_client
 from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClient, HikvisionTerminal
@@ -104,6 +107,28 @@ class HikvisionClientTest(unittest.TestCase):
         with self.assertRaises(FaceProvisioningError):
             self._client().enroll_face("123", "Fulano", b"not a jpeg")
 
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_check_health_parses_json(self, mock_request):
+        mock_request.return_value = MagicMock(status_code=200, json=lambda: {"DeviceInfo": {"model": "DS-K1T671MF-L"}})
+        info = self._client().check_health()
+        self.assertEqual(info["model"], "DS-K1T671MF-L")
+
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_check_health_falls_back_to_xml_when_content_type_lies(self, mock_request):
+        # VALIDADO AO VIVO: System/deviceInfo do DS-K1T671MF-L alega Content-Type: application/json
+        # mas manda XML de verdade no corpo.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<DeviceInfo version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
+            "<model>DS-K1T671MF-L</model><deviceName>Access Controller</deviceName>"
+            "</DeviceInfo>"
+        )
+        response = MagicMock(status_code=200, text=xml)
+        response.json.side_effect = ValueError("not json")
+        mock_request.return_value = response
+        info = self._client().check_health()
+        self.assertEqual(info, {"model": "DS-K1T671MF-L", "deviceName": "Access Controller"})
+
 
 class FaceClientFactoryTest(unittest.TestCase):
     def test_unknown_vendor_raises(self):
@@ -115,6 +140,49 @@ class FaceClientFactoryTest(unittest.TestCase):
         intel = create_face_client("intelbras", host="x", port=80, username="a", password="b")
         self.assertIsInstance(hik, HikvisionClient)
         self.assertIsInstance(intel, IntelbrasClient)
+
+
+class FaceTerminalsStoreTest(unittest.TestCase):
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)  # começa sem arquivo, igual ao primeiro uso real
+        self._patcher = patch.object(face_terminals_store, "STORE_PATH", path)
+        self._patcher.start()
+        self._path = path
+
+    def tearDown(self):
+        self._patcher.stop()
+        if os.path.exists(self._path):
+            os.remove(self._path)
+
+    def test_create_list_update_delete_roundtrip(self):
+        created = face_terminals_store.create_terminal(
+            {"name": "Catraca", "vendor": "hikvision", "host": "192.168.1.100", "port": 80, "username": "admin", "password": "segredo"}
+        )
+        self.assertTrue(created["id"])
+        self.assertEqual(face_terminals_store.list_terminals(), [created])
+
+        updated = face_terminals_store.update_terminal(created["id"], {"name": "Catraca Entrada", "password": "novo_segredo"})
+        self.assertEqual(updated["name"], "Catraca Entrada")
+        self.assertEqual(updated["password"], "novo_segredo")
+        self.assertEqual(updated["host"], "192.168.1.100")  # campo não enviado no update permanece
+
+        self.assertTrue(face_terminals_store.delete_terminal(created["id"]))
+        self.assertEqual(face_terminals_store.list_terminals(), [])
+
+    def test_update_with_masked_password_placeholder_keeps_existing_password(self):
+        created = face_terminals_store.create_terminal({"name": "X", "host": "h", "username": "u", "password": "segredo_real"})
+        updated = face_terminals_store.update_terminal(created["id"], {"name": "X2", "password": "********"})
+        self.assertEqual(updated["password"], "segredo_real")
+
+    def test_for_display_masks_password(self):
+        terminal = {"password": "segredo"}
+        self.assertEqual(face_terminals_store.for_display(terminal)["password"], "********")
+
+    def test_invalid_vendor_falls_back_to_hikvision(self):
+        created = face_terminals_store.create_terminal({"name": "X", "vendor": "acme", "host": "h", "username": "u", "password": "p"})
+        self.assertEqual(created["vendor"], "hikvision")
 
 
 if __name__ == "__main__":

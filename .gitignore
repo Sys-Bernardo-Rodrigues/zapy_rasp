@@ -32,3 +32,6 @@ instance/
 # Variáveis de ambiente (se usar depois)
 .env
 .env.local
+
+# Terminais faciais cadastrados (guarda credenciais em texto puro)
+face_terminals.json

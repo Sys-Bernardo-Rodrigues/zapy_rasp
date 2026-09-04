@@ -10,6 +10,7 @@ um DS-K1T671MF-L real, firmware V3.7.0. Não reinventa o handshake Digest
 import json
 import logging
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 import requests
@@ -206,6 +207,26 @@ class HikvisionClient:
         except Exception as e:
             return {"ok": False, "reason": str(e)}
 
+    def check_health(self) -> dict:
+        """GET System/deviceInfo — endpoint ISAPI padrão presente em praticamente todo device
+        Hikvision, leve e sem efeito colateral. Só pra status online/offline no painel."""
+        res = self.request("GET", "System/deviceInfo")
+        if not (200 <= res.status_code < 300):
+            raise FaceProvisioningError(f"System/deviceInfo retornou {res.status_code}: {res.text}")
+        try:
+            body = res.json()
+            return body.get("DeviceInfo", body) if isinstance(body, dict) else {}
+        except ValueError:
+            pass
+        # VALIDADO AO VIVO contra o DS-K1T671MF-L: esse endpoint alega
+        # `Content-Type: application/json` mas manda XML de verdade no corpo mesmo com
+        # `?format=json` — mesma família de pitfall do doorControl.ts/alertHost.ts do
+        # z-edu, aqui num endpoint diferente. Fallback pra XML achatado.
+        try:
+            return _parse_flat_xml(res.text)
+        except ET.ParseError:
+            return {}
+
 
 def _validate_jpeg(jpeg: bytes) -> None:
     if len(jpeg) == 0:
@@ -246,3 +267,11 @@ def _extract_sub_status(res: requests.Response) -> str | None:
         value = data.get("subStatusCode")
         return value if isinstance(value, str) else None
     return None
+
+
+def _parse_flat_xml(text: str) -> dict:
+    """Parser mínimo pra XML achatado (sem aninhamento) tipo DeviceInfo — pega tag:texto de
+    cada filho direto da raiz, ignorando o namespace (`{url}tag` -> `tag`). Não serve pra XML
+    com estrutura aninhada (RightPlan, etc.) — só pra respostas simples tipo chave/valor."""
+    root = ET.fromstring(text)
+    return {child.tag.split("}")[-1]: child.text for child in root}
