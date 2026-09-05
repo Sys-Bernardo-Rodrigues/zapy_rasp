@@ -293,6 +293,7 @@ def run_zaccess_client(
         def face_revoke(data):
             """Servidor pede pra remover um rosto de um terminal."""
             person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
             terminal_id = str(data.get("terminalId") or "")
             if not person_id or not terminal_id:
                 logger.warning("ZAccess: face:revoke inválido - %s", data)
@@ -306,11 +307,11 @@ def run_zaccess_client(
 
             def run():
                 try:
-                    client.delete_user_info(person_id)
-                    logger.info("ZAccess: rosto de %s removido do terminal %s", person_id, terminal_id)
+                    client.delete_user_info(employee_no)
+                    logger.info("ZAccess: rosto de %s removido do terminal %s", employee_no, terminal_id)
                     _emit_enroll_ack(person_id, terminal_id, "revoked")
                 except Exception as e:
-                    logger.error("ZAccess: falha ao remover rosto de %s do terminal %s - %s", person_id, terminal_id, e)
+                    logger.error("ZAccess: falha ao remover rosto de %s do terminal %s - %s", employee_no, terminal_id, e)
                     _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
 
             threading.Thread(target=run, daemon=True).start()
