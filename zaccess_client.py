@@ -12,7 +12,15 @@ import time
 
 import socketio
 
-from face_agent import create_face_client
+from face_agent import (
+    EventsPoller,
+    LocalStore,
+    create_face_client,
+    enforce_schedule,
+    fetch_hikvision_events_since,
+    fetch_intelbras_events_since,
+)
+from face_agent.hikvision_client import HikvisionClient
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +28,8 @@ NAMESPACE = "/devices"
 HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.IO)
 INPUT_PUSH_INTERVAL = 30 # backup: reenvio periódico; mudanças reais são enviadas na hora via callback
 FACE_TERMINAL_STATUS_INTERVAL = 60  # heartbeat de saúde dos terminais faciais
+SCHEDULE_ENFORCER_INTERVAL = 60     # confere agenda de horário do roster local
+FACE_EVENTS_POLL_INTERVAL = 15      # poll de eventos de reconhecimento (face:identified)
 RECONNECT_DELAY = 5
 RECONNECT_MAX_DELAY = 120
 
@@ -48,12 +58,18 @@ def run_zaccess_client(
     relay_id_by_channel: dict[int, str] = {}
     input_id_by_gpio: dict[int, str] = {}
     face_clients: dict[str, object] = {}  # terminalId -> HikvisionClient/IntelbrasClient
+    # Roster com agenda de horário e cursor de poll de eventos — sobrevive a reconexões e
+    # a restart do processo (arquivo em disco), pra schedule_enforcer/events_poller
+    # funcionarem mesmo com a nuvem fora do ar.
+    local_store = LocalStore()
+    event_pollers: dict[str, tuple[threading.Thread, threading.Event]] = {}
     reconnect_delay = RECONNECT_DELAY
 
     while True:
         input_push_stop = threading.Event()
         heartbeat_stop = threading.Event()
         face_status_stop = threading.Event()
+        schedule_stop = threading.Event()
         session_started = time.monotonic()
         sio = socketio.Client(logger=False, engineio_logger=False)
 
@@ -127,6 +143,49 @@ def run_zaccess_client(
             except Exception:
                 pass
 
+        def _emit_face_identified(events):
+            """Callback dos EventsPoller — log/auditoria, nunca autoriza nada (a decisão de
+            abrir já foi tomada localmente pelo terminal)."""
+            for event in events:
+                try:
+                    if sio.connected:
+                        sio.emit(
+                            "face:identified",
+                            {
+                                "terminalId": event["terminal_id"],
+                                "employeeNo": event["employee_no"],
+                                "confidence": None,
+                                "success": event["success"],
+                                "timestamp": event["time"],
+                            },
+                            namespace=NAMESPACE,
+                        )
+                except Exception:
+                    pass
+
+        def _sync_event_pollers():
+            """(Re)inicia um EventsPoller por terminal facial configurado, parando os que
+            saíram da config (ex.: terminal removido no painel). Hikvision usa AcsEvent;
+            Intelbras só tem doorlog — mesma assimetria do plano de integração facial (seção
+            6.3), refletida aqui na escolha da função de fetch por tipo de client."""
+            for tid in list(event_pollers.keys()):
+                if tid not in face_clients:
+                    _, stop_evt = event_pollers.pop(tid)
+                    stop_evt.set()
+
+            for tid, client in face_clients.items():
+                if tid in event_pollers:
+                    continue
+                if isinstance(client, HikvisionClient):
+                    fetch = lambda cursor, c=client, t=tid: fetch_hikvision_events_since(c, t, cursor)
+                else:
+                    # Direção fixa "unknown": FaceTerminal ainda não tem esse campo no
+                    # servidor (sem consumidor até schedule_enforcer/events_poller existirem).
+                    fetch = lambda cursor, c=client, t=tid: fetch_intelbras_events_since(c, t, "unknown", cursor)
+                poller = EventsPoller(local_store, tid, fetch)
+                thread, stop_evt = poller.start(_emit_face_identified, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
+                event_pollers[tid] = (thread, stop_evt)
+
         @sio.on("device:config", namespace=NAMESPACE)
         def device_config(data):
             relay_id_by_channel.clear()
@@ -156,6 +215,8 @@ def run_zaccess_client(
                     )
                 except Exception as e:
                     logger.error("ZAccess: falha ao configurar terminal facial %s - %s", tid, e)
+
+            _sync_event_pollers()
 
             logger.info(
                 "ZAccess: config recebida, relés: %s, inputs: %s, terminais faciais: %s",
@@ -281,6 +342,10 @@ def run_zaccess_client(
                 try:
                     jpeg = base64.b64decode(jpeg_b64)
                     client.enroll_face(employee_no, name, jpeg)
+                    # Guarda no roster local (com a foto e a agenda) pra schedule_enforcer
+                    # poder reaplicar sozinho, sem depender da nuvem estar no ar.
+                    local_store.upsert_roster(terminal_id, employee_no, name, jpeg, data.get("accessSchedule"))
+                    local_store.set_enrolled(terminal_id, employee_no, True)
                     logger.info("ZAccess: rosto de %s cadastrado no terminal %s", name, terminal_id)
                     _emit_enroll_ack(person_id, terminal_id, "enrolled")
                 except Exception as e:
@@ -308,6 +373,9 @@ def run_zaccess_client(
             def run():
                 try:
                     client.delete_user_info(employee_no)
+                    # Revoke explícito do servidor = remove do roster de vez (diferente do
+                    # schedule_enforcer, que só desmarca "enrolled" pra poder reaplicar depois).
+                    local_store.remove_roster(terminal_id, employee_no)
                     logger.info("ZAccess: rosto de %s removido do terminal %s", employee_no, terminal_id)
                     _emit_enroll_ack(person_id, terminal_id, "revoked")
                 except Exception as e:
@@ -364,6 +432,18 @@ def run_zaccess_client(
                     except Exception:
                         pass
 
+        def schedule_enforcer_loop():
+            """Aplica a agenda de horário do roster local — funciona mesmo com a nuvem fora
+            do ar, porque só depende do que já foi persistido em enroll (ver face_enroll)."""
+            while not schedule_stop.is_set():
+                if schedule_stop.wait(timeout=SCHEDULE_ENFORCER_INTERVAL):
+                    break
+                for terminal_id, client in list(face_clients.items()):
+                    try:
+                        enforce_schedule(client, local_store, terminal_id, terminal_id)
+                    except Exception:
+                        logger.exception("ZAccess: falha no schedule_enforcer do terminal %s", terminal_id)
+
         def heartbeat_loop():
             while not heartbeat_stop.is_set():
                 if heartbeat_stop.wait(timeout=HEARTBEAT_INTERVAL):
@@ -395,6 +475,8 @@ def run_zaccess_client(
                 t_in.start()
             t_face = threading.Thread(target=face_terminal_status_loop, daemon=True)
             t_face.start()
+            t_schedule = threading.Thread(target=schedule_enforcer_loop, daemon=True)
+            t_schedule.start()
             sio.wait()
         except Exception as e:
             logger.warning("ZAccess: conexão encerrada - %s", e)
@@ -402,6 +484,10 @@ def run_zaccess_client(
             heartbeat_stop.set()
             input_push_stop.set()
             face_status_stop.set()
+            schedule_stop.set()
+            for _, stop_evt in event_pollers.values():
+                stop_evt.set()
+            event_pollers.clear()
             if sio.connected:
                 try:
                     sio.disconnect()
