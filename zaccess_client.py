@@ -4,6 +4,7 @@ Escuta relay:toggle; envia relay:state-update, input:state-update e heartbeat (t
 A conexão em si é mantida pelo ping nativo do Socket.IO; heartbeat é opcional/complementar.
 Ref: https://github.com/Sys-Bernardo-Rodrigues/Projeto-ZAccess
 """
+import base64
 import os
 import logging
 import threading
@@ -11,11 +12,14 @@ import time
 
 import socketio
 
+from face_agent import create_face_client
+
 logger = logging.getLogger(__name__)
 
 NAMESPACE = "/devices"
 HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.IO)
 INPUT_PUSH_INTERVAL = 30 # backup: reenvio periódico; mudanças reais são enviadas na hora via callback
+FACE_TERMINAL_STATUS_INTERVAL = 60  # heartbeat de saúde dos terminais faciais
 RECONNECT_DELAY = 5
 RECONNECT_MAX_DELAY = 120
 
@@ -43,11 +47,13 @@ def run_zaccess_client(
 
     relay_id_by_channel: dict[int, str] = {}
     input_id_by_gpio: dict[int, str] = {}
+    face_clients: dict[str, object] = {}  # terminalId -> HikvisionClient/IntelbrasClient
     reconnect_delay = RECONNECT_DELAY
 
     while True:
         input_push_stop = threading.Event()
         heartbeat_stop = threading.Event()
+        face_status_stop = threading.Event()
         session_started = time.monotonic()
         sio = socketio.Client(logger=False, engineio_logger=False)
 
@@ -135,7 +141,26 @@ def run_zaccess_client(
                 iid = i.get("id")
                 if gpio is not None and iid is not None:
                     input_id_by_gpio[int(gpio)] = str(iid)
-            logger.info("ZAccess: config recebida, relés: %s, inputs: %s", list(relay_id_by_channel.keys()), list(input_id_by_gpio.keys()))
+
+            face_clients.clear()
+            for t in data.get("faceTerminals") or []:
+                tid = t.get("id")
+                if not tid:
+                    continue
+                try:
+                    face_clients[str(tid)] = create_face_client(
+                        t["vendor"], host=t["host"], port=t.get("port") or 80,
+                        username=t["username"], password=t["password"],
+                        https=bool(t.get("https")), verify_tls=t.get("rejectUnauthorized", True) is not False,
+                        relay_level=t.get("relayLevel") or 0,
+                    )
+                except Exception as e:
+                    logger.error("ZAccess: falha ao configurar terminal facial %s - %s", tid, e)
+
+            logger.info(
+                "ZAccess: config recebida, relés: %s, inputs: %s, terminais faciais: %s",
+                list(relay_id_by_channel.keys()), list(input_id_by_gpio.keys()), list(face_clients.keys()),
+            )
             push_input_states()
             # Callbacks: envio instantâneo ao mudar GPIO (activated=inactive, deactivated=active para ZAccess)
             if sensores and sensor_pins:
@@ -222,6 +247,122 @@ def run_zaccess_client(
                     pass
             logger.info("ZAccess: relé canal %s -> %s", channel, state)
 
+        def _emit_enroll_ack(person_id: str, terminal_id: str, status: str, error: str | None = None):
+            try:
+                if sio.connected:
+                    payload = {"personId": person_id, "terminalId": terminal_id, "status": status}
+                    if error:
+                        payload["error"] = error
+                    sio.emit("face:enroll-ack", payload, namespace=NAMESPACE)
+            except Exception:
+                pass
+
+        @sio.on("face:enroll", namespace=NAMESPACE)
+        def face_enroll(data):
+            """Servidor pede pra cadastrar um rosto num terminal. Roda em thread separada
+            pra não travar o processamento de outros eventos socket (enroll faz 2 chamadas
+            HTTP ao terminal, pode levar alguns segundos)."""
+            person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
+            terminal_id = str(data.get("terminalId") or "")
+            name = data.get("name") or employee_no
+            jpeg_b64 = data.get("jpegBase64")
+            if not person_id or not terminal_id or not jpeg_b64:
+                logger.warning("ZAccess: face:enroll inválido - %s", {k: v for k, v in data.items() if k != "jpegBase64"})
+                return
+
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: face:enroll pra terminal desconhecido %s", terminal_id)
+                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                return
+
+            def run():
+                try:
+                    jpeg = base64.b64decode(jpeg_b64)
+                    client.enroll_face(employee_no, name, jpeg)
+                    logger.info("ZAccess: rosto de %s cadastrado no terminal %s", name, terminal_id)
+                    _emit_enroll_ack(person_id, terminal_id, "enrolled")
+                except Exception as e:
+                    logger.error("ZAccess: falha ao cadastrar rosto de %s no terminal %s - %s", name, terminal_id, e)
+                    _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("face:revoke", namespace=NAMESPACE)
+        def face_revoke(data):
+            """Servidor pede pra remover um rosto de um terminal."""
+            person_id = str(data.get("personId") or "")
+            terminal_id = str(data.get("terminalId") or "")
+            if not person_id or not terminal_id:
+                logger.warning("ZAccess: face:revoke inválido - %s", data)
+                return
+
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: face:revoke pra terminal desconhecido %s", terminal_id)
+                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                return
+
+            def run():
+                try:
+                    client.delete_user_info(person_id)
+                    logger.info("ZAccess: rosto de %s removido do terminal %s", person_id, terminal_id)
+                    _emit_enroll_ack(person_id, terminal_id, "revoked")
+                except Exception as e:
+                    logger.error("ZAccess: falha ao remover rosto de %s do terminal %s - %s", person_id, terminal_id, e)
+                    _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("face:reboot", namespace=NAMESPACE)
+        def face_reboot(data):
+            """Servidor pede reboot físico de um terminal facial."""
+            terminal_id = str(data.get("terminalId") or "")
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: face:reboot pra terminal desconhecido %s", terminal_id)
+                return
+
+            def run():
+                result = client.reboot_terminal()
+                try:
+                    if sio.connected:
+                        payload = {"terminalId": terminal_id, "status": "rebooted" if result.get("ok") else "failed"}
+                        if not result.get("ok"):
+                            payload["error"] = result.get("reason")
+                        sio.emit("face:reboot-ack", payload, namespace=NAMESPACE)
+                except Exception:
+                    pass
+                logger.info("ZAccess: reboot do terminal %s -> %s", terminal_id, result)
+
+            threading.Thread(target=run, daemon=True).start()
+
+        def face_terminal_status_loop():
+            """Heartbeat de saúde dos terminais faciais — só os que têm check_health (Intelbras
+            hoje; Hikvision também expõe via System/deviceInfo)."""
+            while not face_status_stop.is_set():
+                if face_status_stop.wait(timeout=FACE_TERMINAL_STATUS_INTERVAL):
+                    break
+                if not sio.connected:
+                    continue
+                for terminal_id, client in list(face_clients.items()):
+                    if not hasattr(client, "check_health"):
+                        continue
+                    try:
+                        client.check_health()
+                        status = "online"
+                    except Exception:
+                        status = "offline"
+                    try:
+                        sio.emit(
+                            "face:terminal-status",
+                            {"terminalId": terminal_id, "status": status, "lastSeen": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                            namespace=NAMESPACE,
+                        )
+                    except Exception:
+                        pass
+
         def heartbeat_loop():
             while not heartbeat_stop.is_set():
                 if heartbeat_stop.wait(timeout=HEARTBEAT_INTERVAL):
@@ -251,12 +392,15 @@ def run_zaccess_client(
             if sensores and sensor_pins:
                 t_in = threading.Thread(target=input_push_loop, daemon=True)
                 t_in.start()
+            t_face = threading.Thread(target=face_terminal_status_loop, daemon=True)
+            t_face.start()
             sio.wait()
         except Exception as e:
             logger.warning("ZAccess: conexão encerrada - %s", e)
         finally:
             heartbeat_stop.set()
             input_push_stop.set()
+            face_status_stop.set()
             if sio.connected:
                 try:
                     sio.disconnect()
