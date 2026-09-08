@@ -384,6 +384,35 @@ def run_zaccess_client(
 
             threading.Thread(target=run, daemon=True).start()
 
+        @sio.on("face:open-door", namespace=NAMESPACE)
+        def face_open_door(data):
+            """Servidor pede abertura remota da porta vinculada a um terminal facial —
+            comando administrativo direto, não passa pelo reconhecimento facial."""
+            terminal_id = str(data.get("terminalId") or "")
+            by_app = data.get("byApp")
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: face:open-door pra terminal desconhecido %s", terminal_id)
+                return
+
+            def run():
+                result = client.open_door()
+                try:
+                    if sio.connected:
+                        payload = {"terminalId": terminal_id, "status": "opened" if result.get("ok") else "failed"}
+                        if not result.get("ok"):
+                            payload["error"] = result.get("reason")
+                        # Ecoa quem pediu (só o servidor sabe, veio no evento) — o handler do
+                        # ack usa isso pra logar com o nome de quem abriu, em vez de genérico.
+                        if by_app:
+                            payload["byApp"] = by_app
+                        sio.emit("face:open-door-ack", payload, namespace=NAMESPACE)
+                except Exception:
+                    pass
+                logger.info("ZAccess: abertura remota do terminal %s -> %s", terminal_id, result)
+
+            threading.Thread(target=run, daemon=True).start()
+
         @sio.on("face:reboot", namespace=NAMESPACE)
         def face_reboot(data):
             """Servidor pede reboot físico de um terminal facial."""

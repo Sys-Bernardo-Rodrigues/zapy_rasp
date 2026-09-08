@@ -119,6 +119,16 @@ terminal) **e** um `relay:toggle` pro relé vinculado — mesmo comando que o
 toggle manual de porta já usa, sem evento novo pro Zapy tratar. Sem
 `linkedRelayId`, só o `face:open-door` é enviado.
 
+### `face:open-door` responde com `face:open-door-ack`
+
+`zaccess_client.py` chama `client.open_door()` (ISAPI no Hikvision, `relay
+trig` no Intelbras) e sempre responde com `face:open-door-ack` —
+`{terminalId, status: "opened"|"failed", error?}`. Quando o evento veio do
+app (não do painel admin), o servidor manda um campo extra `byApp` com o
+nome de quem pediu; o Zapy só **ecoa** esse campo de volta no ack, sem
+processá-lo. É assim que o relatório do ZAccess sabe quem abriu pelo app sem
+duplicar o log — o log final só é criado quando esse ack chega, nunca antes.
+
 ## Variáveis de ambiente
 
 | Variável | Descrição |
