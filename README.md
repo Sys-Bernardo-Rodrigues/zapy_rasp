@@ -107,7 +107,17 @@ Para este dispositivo ser **controlado pelo ZAccess** (painel admin ou app):
    ```
    Ou use um gerenciador de ambiente (systemd, etc.) que carregue o `.env`.
 
-O cliente Socket.IO conecta ao namespace `/devices` do ZAccess, envia **heartbeat** e obedece ao comando **relay:toggle**. O painel local (porta 3080) continua funcionando em paralelo.
+O cliente Socket.IO conecta ao namespace `/devices` do ZAccess, envia **heartbeat** e obedece aos comandos **relay:toggle**, **face:enroll**, **face:revoke**, **face:open-door** e **face:reboot** (`zaccess_client.py`). O painel local (porta 3080) continua funcionando em paralelo.
+
+### Terminal facial com relé vinculado
+
+Quando um terminal facial (Hikvision/Intelbras) tem um relé do Zapy vinculado
+(`linkedRelayId` no ZAccess — usado quando a mesma porta também abre por
+convite/QR), abrir a porta pelo app ou painel dispara **os dois comandos**
+pro Zapy: o `face:open-door` de sempre (fala ISAPI/HTTP direto com o
+terminal) **e** um `relay:toggle` pro relé vinculado — mesmo comando que o
+toggle manual de porta já usa, sem evento novo pro Zapy tratar. Sem
+`linkedRelayId`, só o `face:open-door` é enviado.
 
 ## Variáveis de ambiente
 
