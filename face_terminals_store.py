@@ -22,6 +22,7 @@ _DEFAULTS = {
     "https": False,
     "verify_tls": True,
     "relay_level": 0,  # Intelbras: NO-COM(0)/NC-COM(1), depende da fiação da instalação
+    "cockpit_enabled": True,  # porteiro pode abrir esse terminal em /cockpit
 }
 
 
@@ -49,7 +50,7 @@ def _normalize(data: dict, existing: dict | None = None) -> dict:
         value = data[field]
         if field == "port":
             value = int(value) if str(value).strip() else 80
-        elif field in ("https", "verify_tls"):
+        elif field in ("https", "verify_tls", "cockpit_enabled"):
             value = bool(value)
         elif field == "relay_level":
             value = 1 if int(value or 0) == 1 else 0

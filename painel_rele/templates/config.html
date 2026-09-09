@@ -1,88 +1,91 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zapy – Configuração ZAccess</title>
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <style>
-        .shell { max-width: 640px; }
-    </style>
-</head>
-<body>
-    <div class="layout">
-        <header class="topbar">
-            <div class="topbar-left">
-                <img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="Zapy">
-                <div class="topbar-title">
-                    <span>Configuração do dispositivo</span>
-                    <span>Zapy – Dispositivo ZAccess</span>
-                </div>
-            </div>
-            <div class="topbar-right">
-                <a href="/face-terminals">Terminais faciais</a>
-                <a href="/health">Saúde</a>
-                <a href="/">Painel</a>
-                <a href="/logout">Sair</a>
-            </div>
-        </header>
+{% extends "base.html" %}
+{% block title_suffix %} – Configurações{% endblock %}
 
-        <main class="shell">
-            <section class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Configuração ZAccess</span>
-                    <span class="panel-sub">Servidor, serial e pulsos</span>
-                </div>
-                <p class="panel-desc">Defina o servidor ZAccess, identifique este dispositivo e configure os tempos de pulso dos relés.</p>
-                <div class="field">
-                    <label for="ZACCESS_SERVER_URL">URL do servidor ZAccess</label>
-                    <input type="url" id="ZACCESS_SERVER_URL" placeholder="http://192.168.1.100:3000" autocomplete="off">
-                    <p class="hint">Ex.: http://IP-DO-SERVIDOR:3000</p>
-                </div>
-                <div class="field">
-                    <label for="ZACCESS_DEVICE_SERIAL">Número de série do dispositivo</label>
-                    <input type="text" id="ZACCESS_DEVICE_SERIAL" placeholder="ZAPY-001" autocomplete="off">
-                </div>
-                <div class="field">
-                    <label for="ZACCESS_DEVICE_TOKEN">Token do dispositivo (opcional)</label>
-                    <input type="password" id="ZACCESS_DEVICE_TOKEN" placeholder="Deixe em branco se não usar" autocomplete="off">
-                </div>
-                <div class="field">
-                    <label for="PORT">Porta do painel</label>
-                    <input type="number" id="PORT" placeholder="3080" min="1" max="65535" autocomplete="off">
-                    <p class="hint">Reinicie o serviço após alterar a porta.</p>
-                </div>
-                <p class="panel-desc" style="margin-top:8px;">Pulso por relé (segundos). 0 ou vazio = modo toggle normal.</p>
-                <div class="field">
-                    <label for="PULSE_RELE_1">Relé 1</label>
-                    <input type="number" id="PULSE_RELE_1" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-                </div>
-                <div class="field">
-                    <label for="PULSE_RELE_2">Relé 2</label>
-                    <input type="number" id="PULSE_RELE_2" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-                </div>
-                <div class="field">
-                    <label for="PULSE_RELE_3">Relé 3</label>
-                    <input type="number" id="PULSE_RELE_3" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-                </div>
-                <div class="field">
-                    <label for="PULSE_RELE_4">Relé 4</label>
-                    <input type="number" id="PULSE_RELE_4" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
-                </div>
-                <div class="btn-row">
-                    <button type="button" class="btn btn-primary" id="saveConfig">Salvar configuração</button>
-                    <button type="button" class="btn btn-outline" id="restartService" title="Reinicia o serviço Zapy (aplicar config ZAccess)">Reiniciar serviço</button>
-                </div>
-                <div class="msg" id="configMsg"></div>
-            </section>
-        </main>
-    </div>
+{% block page_title %}Configurações{% endblock %}
+{% block page_subtitle %}Servidor ZAccess, pulsos dos relés e o que o porteiro pode abrir no cockpit.{% endblock %}
 
-    <script>
+{% block extra_head %}
+<style>
+    .page-content.narrow { display: flex; flex-direction: column; gap: 18px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-content narrow" style="padding:0; max-width:640px;">
+    <section class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Configuração ZAccess</span>
+            <span class="panel-sub">Servidor, serial e pulsos</span>
+        </div>
+        <p class="panel-desc">Defina o servidor ZAccess, identifique este dispositivo e configure os tempos de pulso dos relés.</p>
+        <div class="field">
+            <label for="ZACCESS_SERVER_URL">URL do servidor ZAccess</label>
+            <input type="url" id="ZACCESS_SERVER_URL" placeholder="http://192.168.1.100:3000" autocomplete="off">
+            <p class="hint">Ex.: http://IP-DO-SERVIDOR:3000</p>
+        </div>
+        <div class="field">
+            <label for="ZACCESS_DEVICE_SERIAL">Número de série do dispositivo</label>
+            <input type="text" id="ZACCESS_DEVICE_SERIAL" placeholder="ZAPY-001" autocomplete="off">
+        </div>
+        <div class="field">
+            <label for="ZACCESS_DEVICE_TOKEN">Token do dispositivo (opcional)</label>
+            <input type="password" id="ZACCESS_DEVICE_TOKEN" placeholder="Deixe em branco se não usar" autocomplete="off">
+        </div>
+        <div class="field">
+            <label for="PORT">Porta do painel</label>
+            <input type="number" id="PORT" placeholder="3080" min="1" max="65535" autocomplete="off">
+            <p class="hint">Reinicie o serviço após alterar a porta.</p>
+        </div>
+        <p class="panel-desc" style="margin-top:8px;">Pulso por relé (segundos). 0 ou vazio = modo toggle normal.</p>
+        <div class="field">
+            <label for="PULSE_RELE_1">Relé 1</label>
+            <input type="number" id="PULSE_RELE_1" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
+        </div>
+        <div class="field">
+            <label for="PULSE_RELE_2">Relé 2</label>
+            <input type="number" id="PULSE_RELE_2" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
+        </div>
+        <div class="field">
+            <label for="PULSE_RELE_3">Relé 3</label>
+            <input type="number" id="PULSE_RELE_3" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
+        </div>
+        <div class="field">
+            <label for="PULSE_RELE_4">Relé 4</label>
+            <input type="number" id="PULSE_RELE_4" placeholder="0 = desativado" min="0" max="300" step="0.5" autocomplete="off">
+        </div>
+        <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="saveConfig">Salvar configuração</button>
+            <button type="button" class="btn btn-outline" id="restartService" title="Reinicia o serviço Zapy (aplicar config ZAccess)">Reiniciar serviço</button>
+        </div>
+        <div class="msg" id="configMsg"></div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Cockpit do porteiro</span>
+            <span class="panel-sub">Quais portas ele pode abrir</span>
+        </div>
+        <p class="panel-desc">
+            Desmarque os relés que o porteiro NÃO deve conseguir abrir pelo <a href="/cockpit">cockpit</a>.
+            Admin sempre vê e abre todos, independente disso. Terminais faciais têm o
+            mesmo controle em <a href="/face-terminals">Terminais faciais</a> (checkbox "Liberado pro porteiro").
+        </p>
+        <div class="checks" id="cockpitRelayChecks">
+            <label class="chk"><input type="checkbox" class="cockpit-relay" value="1"> Relé 1</label>
+            <label class="chk"><input type="checkbox" class="cockpit-relay" value="2"> Relé 2</label>
+            <label class="chk"><input type="checkbox" class="cockpit-relay" value="3"> Relé 3</label>
+            <label class="chk"><input type="checkbox" class="cockpit-relay" value="4"> Relé 4</label>
+        </div>
+        <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="saveCockpitRelays">Salvar</button>
+        </div>
+        <div class="msg" id="cockpitRelaysMsg"></div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
 (function() {
     var configKeys = [
         'ZACCESS_SERVER_URL', 'ZACCESS_DEVICE_SERIAL', 'ZACCESS_DEVICE_TOKEN', 'PORT',
@@ -152,7 +155,47 @@
     });
 
     loadConfig();
+
+    // --- Cockpit do porteiro: quais relés ele pode abrir (COCKPIT_RELAYS, CSV) ---
+    var relayChecks = document.querySelectorAll('.cockpit-relay');
+    var cockpitMsgEl = document.getElementById('cockpitRelaysMsg');
+
+    function showCockpitMsg(text, isError) {
+        cockpitMsgEl.textContent = text;
+        cockpitMsgEl.className = 'msg ' + (isError ? 'error' : 'success');
+        cockpitMsgEl.style.display = 'block';
+        setTimeout(function() { cockpitMsgEl.style.display = 'none'; }, 5000);
+    }
+
+    fetch('/api/config')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var raw = (data.COCKPIT_RELAYS || '').trim();
+            var allowed = raw ? raw.split(',').map(function(s) { return s.trim(); }) : null;
+            relayChecks.forEach(function(cb) { cb.checked = allowed === null || allowed.indexOf(cb.value) !== -1; });
+        })
+        .catch(function() {});
+
+    document.getElementById('saveCockpitRelays').addEventListener('click', function() {
+        var btn = this;
+        var checked = Array.prototype.filter.call(relayChecks, function(cb) { return cb.checked; }).map(function(cb) { return cb.value; });
+        // todos marcados = sem restrição (campo vazio); nenhum marcado = "none" (marcador
+        // explícito — vazio sozinho seria ambíguo com "sem restrição")
+        var value = checked.length === relayChecks.length ? '' : (checked.length === 0 ? 'none' : checked.join(','));
+        btn.disabled = true;
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ COCKPIT_RELAYS: value })
+        })
+            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+            .then(function(o) {
+                if (o.ok && o.json.success) showCockpitMsg('Salvo — já vale no próximo carregamento do cockpit.');
+                else showCockpitMsg(o.json.message || 'Erro ao salvar.', true);
+            })
+            .catch(function() { showCockpitMsg('Erro de conexão.', true); })
+            .finally(function() { btn.disabled = false; });
+    });
 })();
-    </script>
-</body>
-</html>
+</script>
+{% endblock %}

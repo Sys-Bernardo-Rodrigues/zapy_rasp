@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Eventos de acesso{% endblock %}
+
+{% block page_title %}Eventos de acesso{% endblock %}
+{% block page_subtitle %}Eventos de abertura por reconhecimento facial, com a foto capturada na hora (ou a do cadastro, se a captura não estiver disponível). Só log/auditoria — quem decide abrir é sempre o terminal.{% endblock %}
+{% block page_actions %}
+<a class="btn btn-outline" id="exportCsv" href="/api/events.csv" target="_blank" rel="noopener">{{ icons.history(14) }} Relatório (CSV)</a>
+{% endblock %}
+
+{% block extra_head %}
+<style>
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 16px; }
+    .filters .field { margin-bottom: 0; min-width: 140px; }
+    .filters .field.grow { flex: 1; min-width: 220px; }
+    .filters .field label { font-size: 0.7rem; }
+    .filters .field input, .filters .field select { padding: 8px 10px; font-size: 0.82rem; }
+    .search-field { position: relative; }
+    .search-field svg { position: absolute; left: 10px; top: 38px; color: var(--muted-foreground); pointer-events: none; }
+    .search-field input { padding-left: 32px !important; }
+    .filters-actions { display: flex; gap: 8px; }
+    .results-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
+    .results-count { font-size: 0.78rem; color: var(--muted-foreground); }
+
+    .event-row { display: flex; align-items: center; gap: 16px; padding: 14px 4px; border-bottom: 1px solid var(--border); }
+    .event-row:last-child { border-bottom: none; }
+    .event-photo { width: 72px; height: 72px; border-radius: var(--radius-lg); object-fit: cover; background: var(--muted); flex-shrink: 0; }
+    .event-photo.placeholder { display: flex; align-items: center; justify-content: center; font-size: 1.4rem; color: var(--muted-foreground); }
+    img.event-photo { cursor: zoom-in; }
+    .event-info { flex: 1; min-width: 0; }
+    .event-name { font-weight: 700; font-size: 1rem; color: var(--foreground); }
+    .event-meta { font-size: 0.8rem; color: var(--muted-foreground); margin-top: 4px; }
+    .event-row .badge { font-size: 0.72rem; padding: 5px 10px; }
+
+    .pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; }
+    .pagination span { font-size: 0.8rem; color: var(--muted-foreground); }
+
+    .photo-lightbox {
+        position: fixed; inset: 0; background: rgba(0, 0, 0, 0.8);
+        display: flex; align-items: center; justify-content: center;
+        padding: 24px; cursor: zoom-out; z-index: 100;
+    }
+    .photo-lightbox img { max-width: min(90vw, 720px); max-height: 88vh; border-radius: var(--radius-lg); }
+
+    @media (max-width: 640px) {
+        .filters .field { min-width: 0; flex: 1 1 45%; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="panel">
+    <div class="filters">
+        <div class="field grow search-field">
+            <label for="fSearch">Buscar (nome ou matrícula)</label>
+            {{ icons.search(14) }}
+            <input type="text" id="fSearch" placeholder="Ex.: Fulano ou 123456">
+        </div>
+        <div class="field">
+            <label for="fTerminal">Terminal</label>
+            <select id="fTerminal"><option value="">Todos</option></select>
+        </div>
+        <div class="field">
+            <label for="fStatus">Resultado</label>
+            <select id="fStatus">
+                <option value="">Todos</option>
+                <option value="success">Liberado</option>
+                <option value="fail">Negado</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="fStart">De</label>
+            <input type="date" id="fStart">
+        </div>
+        <div class="field">
+            <label for="fEnd">Até</label>
+            <input type="date" id="fEnd">
+        </div>
+        <div class="filters-actions">
+            <button type="button" class="btn btn-outline" id="clearFilters">{{ icons.x(12) }} Limpar</button>
+        </div>
+    </div>
+
+    <div class="results-bar">
+        <span class="results-count" id="resultsCount"></span>
+    </div>
+
+    <div id="eventsList"></div>
+    <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum evento encontrado com esses filtros.</p>
+
+    <div class="pagination" id="pagination" style="display:none;">
+        <button type="button" class="btn btn-outline" id="prevPage">‹ Anterior</button>
+        <span id="pageInfo"></span>
+        <button type="button" class="btn btn-outline" id="nextPage">Próxima ›</button>
+    </div>
+</section>
+
+<div class="photo-lightbox" id="photoLightbox" style="display:none;">
+    <img id="photoLightboxImg" src="" alt="Foto do evento ampliada">
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    var container = document.getElementById('eventsList');
+    var emptyHint = document.getElementById('emptyHint');
+    var resultsCount = document.getElementById('resultsCount');
+    var pagination = document.getElementById('pagination');
+    var pageInfo = document.getElementById('pageInfo');
+    var lightbox = document.getElementById('photoLightbox');
+    var lightboxImg = document.getElementById('photoLightboxImg');
+
+    var fSearch = document.getElementById('fSearch');
+    var fTerminal = document.getElementById('fTerminal');
+    var fStatus = document.getElementById('fStatus');
+    var fStart = document.getElementById('fStart');
+    var fEnd = document.getElementById('fEnd');
+    var exportCsv = document.getElementById('exportCsv');
+
+    var state = { page: 1, pageSize: 25 };
+    var searchDebounce = null;
+
+    function closeLightbox() { lightbox.style.display = 'none'; lightboxImg.src = ''; }
+    container.addEventListener('click', function(e) {
+        var img = e.target.closest('img.event-photo');
+        if (!img) return;
+        lightboxImg.src = img.src;
+        lightbox.style.display = 'flex';
+    });
+    lightbox.addEventListener('click', closeLightbox);
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeLightbox(); });
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function fmtTime(iso) {
+        var d = new Date(iso);
+        return isNaN(d.getTime()) ? iso : d.toLocaleString('pt-BR');
+    }
+
+    function rowHtml(e) {
+        var photo = e.hasPhoto
+            ? '<img class="event-photo" src="/api/events/' + encodeURIComponent(e.dedupeKey) + '/photo" alt="">'
+            : '<div class="event-photo placeholder">' + (e.success ? '?' : '✕') + '</div>';
+        return '' +
+        '<div class="event-row">' +
+            photo +
+            '<div class="event-info">' +
+                '<div class="event-name">' + escapeHtml(e.name || e.employeeNo || 'Desconhecido') + '</div>' +
+                '<div class="event-meta">' + escapeHtml(e.terminalName) + ' · ' + escapeHtml(e.directionLabel) + ' · ' + escapeHtml(fmtTime(e.time)) + '</div>' +
+            '</div>' +
+            '<span class="badge ' + (e.success ? 'success' : 'fail') + '">' + (e.success ? 'Liberado' : 'Negado') + '</span>' +
+        '</div>';
+    }
+
+    function currentQuery(forExport) {
+        var params = new URLSearchParams();
+        if (fSearch.value.trim()) params.set('q', fSearch.value.trim());
+        if (fTerminal.value) params.set('terminal', fTerminal.value);
+        if (fStatus.value) params.set('status', fStatus.value);
+        if (fStart.value) params.set('start', fStart.value);
+        if (fEnd.value) params.set('end', fEnd.value);
+        if (!forExport) {
+            params.set('page', state.page);
+            params.set('pageSize', state.pageSize);
+        }
+        return params.toString();
+    }
+
+    function updateExportLink() {
+        exportCsv.href = '/api/events.csv' + (currentQuery(true) ? '?' + currentQuery(true) : '');
+    }
+
+    function load() {
+        fetch('/api/events?' + currentQuery(false))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var events = data.events || [];
+                container.innerHTML = events.map(rowHtml).join('');
+                emptyHint.style.display = events.length === 0 ? 'block' : 'none';
+                resultsCount.textContent = data.total + (data.total === 1 ? ' evento encontrado' : ' eventos encontrados');
+                pagination.style.display = data.totalPages > 1 ? 'flex' : 'none';
+                pageInfo.textContent = 'Página ' + data.page + ' de ' + data.totalPages;
+                document.getElementById('prevPage').disabled = data.page <= 1;
+                document.getElementById('nextPage').disabled = data.page >= data.totalPages;
+                updateExportLink();
+            })
+            .catch(function() {});
+    }
+
+    function reloadFromFilters() {
+        state.page = 1;
+        load();
+    }
+
+    [fTerminal, fStatus, fStart, fEnd].forEach(function(el) {
+        el.addEventListener('change', reloadFromFilters);
+    });
+    fSearch.addEventListener('input', function() {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(reloadFromFilters, 400);
+    });
+
+    document.getElementById('clearFilters').addEventListener('click', function() {
+        fSearch.value = ''; fTerminal.value = ''; fStatus.value = ''; fStart.value = ''; fEnd.value = '';
+        reloadFromFilters();
+    });
+    document.getElementById('prevPage').addEventListener('click', function() {
+        if (state.page > 1) { state.page -= 1; load(); }
+    });
+    document.getElementById('nextPage').addEventListener('click', function() {
+        state.page += 1; load();
+    });
+
+    fetch('/api/events/terminals')
+        .then(function(r) { return r.json(); })
+        .then(function(terminals) {
+            terminals.forEach(function(t) {
+                var opt = document.createElement('option');
+                opt.value = t.id; opt.textContent = t.name;
+                fTerminal.appendChild(opt);
+            });
+        })
+        .catch(function() {});
+
+    load();
+    setInterval(load, 15000);
+})();
+</script>
+{% endblock %}

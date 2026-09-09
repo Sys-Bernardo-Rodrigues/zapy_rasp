@@ -19,6 +19,9 @@ ALLOWED_KEYS = frozenset({
     "PULSE_RELE_2",
     "PULSE_RELE_3",
     "PULSE_RELE_4",
+    # IDs de relé (CSV, ex.: "1,3,4") liberados pro porteiro abrir no /cockpit —
+    # vazio/ausente = todos liberados (não restringe nada até o admin configurar).
+    "COCKPIT_RELAYS",
 })
 
 
@@ -35,20 +38,10 @@ def _parse_env_lines(lines: list[str]) -> dict[str, str]:
     return result
 
 
-def _serialize_env(data: dict[str, str]) -> str:
-    """Gera conteúdo de arquivo .env (apenas chaves permitidas)."""
-    lines = []
-    order = [
-        "ZACCESS_SERVER_URL", "ZACCESS_DEVICE_SERIAL", "ZACCESS_DEVICE_TOKEN", "PORT",
-        "PULSE_RELE_1", "PULSE_RELE_2", "PULSE_RELE_3", "PULSE_RELE_4",
-    ]
-    for key in order:
-        if key in data and data[key] is not None:
-            val = str(data[key]).strip()
-            if " " in val or "#" in val or "\n" in val:
-                val = f'"{val}"'
-            lines.append(f"{key}={val}")
-    return "\n".join(lines) + "\n"
+def _format_line(key: str, val: str) -> str:
+    if " " in val or "#" in val or "\n" in val:
+        val = f'"{val}"'
+    return f"{key}={val}"
 
 
 def read_config() -> dict[str, str]:
@@ -64,8 +57,10 @@ def read_config() -> dict[str, str]:
 
 
 def write_config(data: dict[str, str]) -> None:
-    """Escreve no .env apenas chaves permitidas. Não sobrescreve token com placeholder."""
-    current = read_config()
+    """Atualiza só as chaves permitidas presentes em `data`, em cima do .env existente —
+    preserva comentários e qualquer outra linha (ex.: GPIOZERO_PIN_FACTORY) intocada, em
+    vez de reescrever o arquivo do zero só com ALLOWED_KEYS."""
+    updates: dict[str, str] = {}
     for k in ALLOWED_KEYS:
         if k not in data:
             continue
@@ -73,10 +68,31 @@ def write_config(data: dict[str, str]) -> None:
         # Não sobrescrever token quando o front envia o placeholder (mantém o valor atual)
         if k == "ZACCESS_DEVICE_TOKEN" and v == "********":
             continue
-        current[k] = v
-    content = _serialize_env(current)
+        updates[k] = v
+
+    existing_lines: list[str] = []
+    if os.path.isfile(ENV_PATH):
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            existing_lines = f.readlines()
+
+    seen: set[str] = set()
+    out_lines: list[str] = []
+    for raw_line in existing_lines:
+        stripped = raw_line.strip()
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", stripped) if stripped and not stripped.startswith("#") else None
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            out_lines.append(_format_line(key, updates[key]))
+            seen.add(key)
+        else:
+            out_lines.append(raw_line.rstrip("\n"))
+
+    for key, val in updates.items():
+        if key not in seen:
+            out_lines.append(_format_line(key, val))
+
     with open(ENV_PATH, "w", encoding="utf-8") as f:
-        f.write(content)
+        f.write("\n".join(out_lines) + "\n")
 
 
 def get_config_for_display() -> dict[str, str]:

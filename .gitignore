@@ -36,5 +36,8 @@ instance/
 # Terminais faciais cadastrados (guarda credenciais em texto puro)
 face_terminals.json
 
+# Usuários locais (porteiro etc.) — guarda hash de senha
+users.json
+
 # Roster local do face_agent (SQLite) — fotos + agenda, estado local do dispositivo
 face_agent.sqlite3*

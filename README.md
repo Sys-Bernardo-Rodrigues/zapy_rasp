@@ -7,6 +7,8 @@ Painel web local (Flask) para controle de 4 relés via GPIO no Raspberry Pi, com
 - Python 3.10+
 - Raspberry Pi (GPIO: pinos BCM 5, 6, 13, 19 para os canais 1–4)
 
+Também roda no **Windows/macOS/Linux sem GPIO real** (ex.: desenvolvimento, ou como cliente ZAccess puro): relés e sensores caem automaticamente em **modo mock** (sem controle físico), o painel e a integração com o ZAccess funcionam normalmente.
+
 ## Instalação
 
 ### Instalação completa (recomendado no Raspberry Pi)
@@ -57,6 +59,29 @@ Para remover também o ambiente virtual (`.venv`):
 python3 -m venv .venv
 source .venv/bin/activate   # Linux/macOS
 pip install -r requirements.txt
+```
+
+### Instalação completa no Windows (sem GPIO real)
+
+Instala ambiente virtual, dependências e registra o Zapy como **tarefa agendada** (inicia com o Windows, sem precisar de login), no mesmo padrão do agente local do projeto-z-edu:
+
+```powershell
+.\scripts\install-windows.ps1
+```
+
+Rode num **PowerShell como Administrador**. `lgpio` (linha do `requirements.txt` para GPIO real) só é instalado no Linux; no Windows os relés e sensores caem em modo mock automaticamente (`GPIOZERO_PIN_FACTORY=mock`, adicionado ao `.env` pelo instalador).
+
+- **Status/logs:** Agendador de Tarefas (`taskschd.msc`) → tarefa `Zapy`, ou `Get-ScheduledTask Zapy`
+- **Reiniciar:** `Stop-ScheduledTask Zapy; Start-ScheduledTask Zapy`
+- **Desinstalar:** `.\scripts\uninstall-windows.ps1` (mantém `.env`; use `-Purge` para remover também o `.venv`)
+
+Ou manualmente, sem o instalador:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python app.py
 ```
 
 ## Uso só do painel local

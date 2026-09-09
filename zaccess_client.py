@@ -145,7 +145,9 @@ def run_zaccess_client(
 
         def _emit_face_identified(events):
             """Callback dos EventsPoller — log/auditoria, nunca autoriza nada (a decisão de
-            abrir já foi tomada localmente pelo terminal)."""
+            abrir já foi tomada localmente pelo terminal). Persiste local primeiro (alimenta o
+            painel "Eventos" mesmo se a nuvem estiver fora do ar), só depois tenta emitir."""
+            local_store.add_events(events)
             for event in events:
                 try:
                     if sio.connected:
@@ -177,7 +179,14 @@ def run_zaccess_client(
                 if tid in event_pollers:
                     continue
                 if isinstance(client, HikvisionClient):
-                    fetch = lambda cursor, c=client, t=tid: fetch_hikvision_events_since(c, t, cursor)
+                    def fetch(cursor, c=client, t=tid):
+                        events, next_cursor = fetch_hikvision_events_since(c, t, cursor)
+                        # Baixa a foto capturada na hora (pictureURL só vem em match bem-sucedido)
+                        # antes de devolver — assim já entra persistida no primeiro add_events.
+                        for event in events:
+                            url = event.get("picture_url")
+                            event["picture"] = c.fetch_picture(url) if url else None
+                        return events, next_cursor
                 else:
                     # Direção fixa "unknown": FaceTerminal ainda não tem esse campo no
                     # servidor (sem consumidor até schedule_enforcer/events_poller existirem).
@@ -206,6 +215,10 @@ def run_zaccess_client(
                 tid = t.get("id")
                 if not tid:
                     continue
+                if t.get("name"):
+                    # Nome vem do ZAccess (id do ZAccess, não o de face_terminals_store.py) —
+                    # persiste local pro painel de Eventos conseguir exibir em vez do id cru.
+                    local_store.set_terminal_name(str(tid), t["name"])
                 try:
                     face_clients[str(tid)] = create_face_client(
                         t["vendor"], host=t["host"], port=t.get("port") or 80,

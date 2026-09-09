@@ -1,57 +1,23 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zapy – Terminais faciais</title>
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <style>
-        .shell { max-width: 720px; }
-    </style>
-</head>
-<body>
-    <div class="layout">
-        <header class="topbar">
-            <div class="topbar-left">
-                <img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="Zapy">
-                <div class="topbar-title">
-                    <span>Terminais faciais</span>
-                    <span>Zapy – Dispositivo ZAccess</span>
-                </div>
-            </div>
-            <div class="topbar-right">
-                <a href="/config">Configurações</a>
-                <a href="/health">Saúde</a>
-                <a href="/">Painel</a>
-                <a href="/logout">Sair</a>
-            </div>
-        </header>
+{% extends "base.html" %}
+{% block title_suffix %} – Terminais faciais{% endblock %}
 
-        <main class="shell">
-            <section class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Terminais faciais</span>
-                    <span class="panel-sub">Hikvision &amp; Intelbras</span>
-                </div>
-                <p class="panel-desc">
-                    Cadastre aqui os terminais de reconhecimento facial na rede local desta portaria/escola —
-                    este zapy fala direto com eles (enroll/revoke de rosto, abertura remota, reboot),
-                    igual ao agente do ZCLASS.
-                </p>
-                <div id="terminalsList"></div>
-                <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum terminal cadastrado ainda.</p>
-                <div class="btn-row">
-                    <button type="button" class="btn btn-outline" id="addTerminal">+ Novo terminal</button>
-                </div>
-            </section>
-        </main>
-    </div>
+{% block page_title %}Terminais faciais{% endblock %}
+{% block page_subtitle %}Cadastre os terminais Hikvision/Intelbras na rede local — este zapy fala direto com eles (enroll/revoke de rosto, abertura remota, reboot).{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn btn-primary" id="addTerminal">+ Novo terminal</button>
+{% endblock %}
 
-    <script>
+{% block content %}
+<div class="page-content narrow" style="padding:0; max-width:680px;">
+    <section class="panel">
+        <div id="terminalsList"></div>
+        <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum terminal cadastrado ainda.</p>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
 (function() {
     var container = document.getElementById('terminalsList');
     var emptyHint = document.getElementById('emptyHint');
@@ -92,6 +58,7 @@
             '<div class="checks">' +
                 '<label class="chk"><input type="checkbox" class="f-https"' + (t.https ? ' checked' : '') + '> HTTPS</label>' +
                 '<label class="chk"><input type="checkbox" class="f-verify"' + (t.verify_tls !== false ? ' checked' : '') + '> Validar certificado</label>' +
+                '<label class="chk"><input type="checkbox" class="f-cockpit"' + (t.cockpit_enabled !== false ? ' checked' : '') + '> Liberado pro porteiro (cockpit)</label>' +
             '</div>' +
             '<div class="btn-row">' +
                 '<button type="button" class="btn btn-primary btn-save-terminal">Salvar</button>' +
@@ -118,6 +85,7 @@
             password: card.querySelector('.f-password').value,
             https: card.querySelector('.f-https').checked,
             verify_tls: card.querySelector('.f-verify').checked,
+            cockpit_enabled: card.querySelector('.f-cockpit').checked,
             relay_level: relaySelect ? parseInt(relaySelect.value, 10) : 0,
         };
     }
@@ -188,7 +156,7 @@
     });
 
     document.getElementById('addTerminal').addEventListener('click', function() {
-        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, relay_level: 0 });
+        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0 });
         render();
     });
 
@@ -197,6 +165,5 @@
         .then(function(data) { terminals = data; render(); })
         .catch(function() { emptyHint.textContent = 'Erro ao carregar terminais.'; emptyHint.style.display = 'block'; });
 })();
-    </script>
-</body>
-</html>
+</script>
+{% endblock %}

@@ -1,71 +1,46 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zapy – Saúde do dispositivo</title>
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <style>
-        .shell { max-width: 720px; }
-    </style>
-</head>
-<body>
-    <div class="layout">
-        <header class="topbar">
-            <div class="topbar-left">
-                <img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="Zapy">
-                <div class="topbar-title">
-                    <span>Saúde do dispositivo</span>
-                    <span>Zapy – Raspberry Pi</span>
-                </div>
-            </div>
-            <div class="topbar-right">
-                <a href="/">← Voltar para o painel</a>
-            </div>
-        </header>
+{% extends "base.html" %}
+{% block title_suffix %} – Saúde{% endblock %}
 
-        <main class="shell">
-            <section class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Resumo do sistema</span>
-                </div>
-                <div class="grid">
-                    <div class="metric">
-                        <span class="label">Hostname</span>
-                        <span class="value" id="hostValue">—</span>
-                    </div>
-                    <div class="metric">
-                        <span class="label">Sistema</span>
-                        <span class="value" id="platformValue">—</span>
-                    </div>
-                    <div class="metric">
-                        <span class="label">CPU</span>
-                        <span class="value" id="cpuValue">—</span>
-                    </div>
-                    <div class="metric">
-                        <span class="label">Memória</span>
-                        <span class="value" id="memValue">—</span>
-                    </div>
-                    <div class="metric">
-                        <span class="label">Disco</span>
-                        <span class="value" id="diskValue">—</span>
-                    </div>
-                    <div class="metric">
-                        <span class="label">Uptime</span>
-                        <span class="value" id="uptimeValue">—</span>
-                    </div>
-                    <div class="metric">
-                        <span class="label">Temp. CPU</span>
-                        <span class="value" id="tempValue">—</span>
-                    </div>
-                </div>
-                <p class="section-caption">Em breve podemos ligar esta tela à API de saúde do ZAccess. Por enquanto, os valores podem ser preenchidos via `/api/health-local` se você decidir implementar.</p>
-            </section>
-        </main>
-    </div>
-</body>
-</html>
+{% block page_title %}Saúde do dispositivo{% endblock %}
+{% block page_subtitle %}Resumo de sistema — CPU, memória, disco e uptime deste zapy.{% endblock %}
+
+{% block content %}
+<div class="page-content narrow" style="padding:0; max-width:680px;">
+    <section class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Resumo do sistema</span>
+        </div>
+        <div class="grid">
+            <div class="metric">
+                <span class="label">Hostname</span>
+                <span class="value" id="hostValue">—</span>
+            </div>
+            <div class="metric">
+                <span class="label">Sistema</span>
+                <span class="value" id="platformValue">—</span>
+            </div>
+            <div class="metric">
+                <span class="label">CPU</span>
+                <span class="value" id="cpuValue">—</span>
+            </div>
+            <div class="metric">
+                <span class="label">Memória</span>
+                <span class="value" id="memValue">—</span>
+            </div>
+            <div class="metric">
+                <span class="label">Disco</span>
+                <span class="value" id="diskValue">—</span>
+            </div>
+            <div class="metric">
+                <span class="label">Uptime</span>
+                <span class="value" id="uptimeValue">—</span>
+            </div>
+            <div class="metric">
+                <span class="label">Temp. CPU</span>
+                <span class="value" id="tempValue">—</span>
+            </div>
+        </div>
+        <p class="section-caption">Em breve podemos ligar esta tela à API de saúde do ZAccess. Por enquanto, os valores podem ser preenchidos via `/api/health-local` se você decidir implementar.</p>
+    </section>
+</div>
+{% endblock %}

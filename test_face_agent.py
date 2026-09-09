@@ -85,6 +85,22 @@ class HikvisionClientTest(unittest.TestCase):
         self.assertNotIn("format", kwargs["params"])
         self.assertIn(b"<cmd>open</cmd>", kwargs["data"])
 
+    @patch("face_agent.hikvision_client.requests.get")
+    def test_fetch_picture_returns_bytes_on_success(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, content=JPEG)
+        result = self._client().fetch_picture("http://10.0.0.2/LOCALS/pic/foo.jpeg@WEB1")
+        self.assertEqual(result, JPEG)
+
+    @patch("face_agent.hikvision_client.requests.get")
+    def test_fetch_picture_returns_none_on_http_error(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404, content=b"")
+        self.assertIsNone(self._client().fetch_picture("http://10.0.0.2/LOCALS/pic/foo.jpeg@WEB1"))
+
+    @patch("face_agent.hikvision_client.requests.get")
+    def test_fetch_picture_returns_none_on_network_error(self, mock_get):
+        mock_get.side_effect = requests.RequestException("boom")
+        self.assertIsNone(self._client().fetch_picture("http://10.0.0.2/LOCALS/pic/foo.jpeg@WEB1"))
+
     @patch("face_agent.hikvision_client.requests.request")
     def test_json_request_adds_format_json(self, mock_request):
         mock_request.return_value = MagicMock(status_code=200, json=lambda: {})
@@ -236,6 +252,126 @@ class LocalStoreTest(unittest.TestCase):
         self.assertEqual(cursor.last_event_time, "2026-01-01T00:00:00-03:00")
         self.assertEqual(cursor.search_id, "42")
 
+    def test_add_events_dedupes_and_persists_picture(self):
+        base = {"terminal_id": "t1", "employee_no": "123", "time": "2026-01-01T10:00:00-03:00",
+                "direction": "in", "success": True, "source": "poll"}
+        self.store.add_events([{**base, "dedupe_key": "k1", "picture": JPEG}])
+        self.store.add_events([{**base, "dedupe_key": "k1", "picture": JPEG}])  # reenvio não duplica
+
+        events = self.store.list_recent_events()
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0].has_picture)
+        self.assertEqual(self.store.get_event_picture("k1"), JPEG)
+
+    def test_add_events_prunes_events_older_than_retention(self):
+        from datetime import datetime, timedelta, timezone
+        from face_agent.local_store import EVENTS_RETENTION_DAYS, _BR_TZ
+
+        now = datetime.now(_BR_TZ)
+        old_time = (now - timedelta(days=EVENTS_RETENTION_DAYS + 1)).isoformat()
+        recent_time = (now - timedelta(days=1)).isoformat()
+        base = {"terminal_id": "t1", "employee_no": "123", "direction": "in", "success": True, "source": "poll"}
+
+        self.store.add_events([{**base, "dedupe_key": "old", "time": old_time, "picture": None}])
+        self.store.add_events([{**base, "dedupe_key": "recent", "time": recent_time, "picture": None}])
+
+        keys = {e.dedupe_key for e in self.store.list_recent_events()}
+        self.assertEqual(keys, {"recent"})
+
+    def test_query_events_name_prefers_roster_falls_back_to_device_name(self):
+        # t1/123 está no roster (nome "oficial", sync do ZAccess) -> ganha do device_name.
+        # t2/999 nunca foi cadastrado por aqui (enrolado direto no terminal) -> só
+        # sobra o nome que o próprio device mandou no evento.
+        self.store.upsert_roster("t1", "123", "Fulano do Roster", JPEG, None)
+        self.store.add_events([
+            {"dedupe_key": "e1", "terminal_id": "t1", "employee_no": "123", "time": "2026-01-01T10:00:00-03:00",
+             "direction": "in", "success": True, "source": "poll", "picture": None, "device_name": "Fulano do Device"},
+            {"dedupe_key": "e2", "terminal_id": "t2", "employee_no": "999", "time": "2026-01-01T11:00:00-03:00",
+             "direction": "in", "success": True, "source": "poll", "picture": None, "device_name": "Ciclano (Teste)"},
+        ])
+        by_key = {e.dedupe_key: e for e in self.store.list_recent_events()}
+        self.assertEqual(by_key["e1"].name, "Fulano do Roster")
+        self.assertEqual(by_key["e2"].name, "Ciclano (Teste)")
+
+        # busca por texto também casa contra o device_name
+        found, total = self.store.query_events(q="Ciclano")
+        self.assertEqual(total, 1)
+        self.assertEqual(found[0].dedupe_key, "e2")
+
+    def test_add_events_backfills_device_name_without_overwriting(self):
+        base = {"terminal_id": "t1", "employee_no": "123", "time": "2026-01-01T10:00:00-03:00",
+                "direction": "in", "success": True, "source": "poll"}
+        # 1a passada: sem device_name (terminal antigo, ou campo ausente naquele evento)
+        self.store.add_events([{**base, "dedupe_key": "k1", "picture": None, "device_name": None}])
+        self.assertIsNone(self.store.list_recent_events()[0].name)
+
+        # 2a passada (reprocesso, ex.: cursor rebobinado): agora vem com device_name -> preenche
+        self.store.add_events([{**base, "dedupe_key": "k1", "picture": None, "device_name": "Fulano"}])
+        self.assertEqual(self.store.list_recent_events()[0].name, "Fulano")
+
+        # 3a passada com outro nome não sobrescreve o que já foi preenchido
+        self.store.add_events([{**base, "dedupe_key": "k1", "picture": None, "device_name": "Outro Nome"}])
+        self.assertEqual(self.store.list_recent_events()[0].name, "Fulano")
+
+    def test_query_events_filters_search_and_paginates(self):
+        self.store.upsert_roster("t1", "123", "Fulano de Tal", JPEG, None)
+        events = [
+            {"dedupe_key": "e1", "terminal_id": "t1", "employee_no": "123", "time": "2026-01-01T10:00:00-03:00", "direction": "in", "success": True, "source": "poll", "picture": None},
+            {"dedupe_key": "e2", "terminal_id": "t1", "employee_no": None, "time": "2026-01-01T11:00:00-03:00", "direction": "in", "success": False, "source": "poll", "picture": None},
+            {"dedupe_key": "e3", "terminal_id": "t2", "employee_no": "123", "time": "2026-01-01T12:00:00-03:00", "direction": "in", "success": True, "source": "poll", "picture": None},
+        ]
+        self.store.add_events(events)
+
+        # nome vem via join com o roster
+        all_events, total = self.store.query_events()
+        self.assertEqual(total, 3)
+        by_key = {e.dedupe_key: e for e in all_events}
+        self.assertEqual(by_key["e1"].name, "Fulano de Tal")
+        self.assertIsNone(by_key["e2"].name)
+
+        # filtro por terminal
+        t1_events, t1_total = self.store.query_events(terminal_id="t1")
+        self.assertEqual(t1_total, 2)
+        self.assertTrue(all(e.terminal_id == "t1" for e in t1_events))
+
+        # filtro por sucesso
+        fails, fail_total = self.store.query_events(success=False)
+        self.assertEqual(fail_total, 1)
+        self.assertEqual(fails[0].dedupe_key, "e2")
+
+        # busca por nome (via roster, escopado por terminal — só e1 tem roster em t1) e
+        # por employee_no (casa direto, sem depender de roster — e1 e e3)
+        by_name, by_name_total = self.store.query_events(q="Fulano")
+        self.assertEqual(by_name_total, 1)
+        self.assertEqual(by_name[0].dedupe_key, "e1")
+        by_empno, by_empno_total = self.store.query_events(q="123")
+        self.assertEqual(by_empno_total, 2)
+
+        # paginação (mais recente primeiro)
+        page1, total_p = self.store.query_events(limit=2, offset=0)
+        page2, _ = self.store.query_events(limit=2, offset=2)
+        self.assertEqual(total_p, 3)
+        self.assertEqual([e.dedupe_key for e in page1], ["e3", "e2"])
+        self.assertEqual([e.dedupe_key for e in page2], ["e1"])
+
+    def test_get_event_by_dedupe_key(self):
+        self.store.add_events([{"dedupe_key": "solo", "terminal_id": "t1", "employee_no": None,
+                                 "time": "2026-01-01T10:00:00-03:00", "direction": "in",
+                                 "success": True, "source": "poll", "picture": JPEG}])
+        event = self.store.get_event("solo")
+        self.assertEqual(event.dedupe_key, "solo")
+        self.assertTrue(event.has_picture)
+        self.assertIsNone(self.store.get_event("nao-existe"))
+
+    def test_add_events_without_picture(self):
+        self.store.add_events([{
+            "dedupe_key": "k2", "terminal_id": "t1", "employee_no": None, "time": "2026-01-01T10:00:00-03:00",
+            "direction": "unknown", "success": False, "source": "poll",
+        }])
+        events = self.store.list_recent_events()
+        self.assertFalse(events[0].has_picture)
+        self.assertIsNone(self.store.get_event_picture("k2"))
+
         self.store.set_cursor(PollCursor(terminal_id="t1", last_event_time="2026-01-02T00:00:00-03:00", search_id="43"))
         self.assertEqual(self.store.get_cursor("t1").search_id, "43")
 
@@ -331,6 +467,38 @@ class EventsPollerFieldTest(unittest.TestCase):
     def test_normalize_event_non_success_minor_code(self):
         event = _normalize_event("t1", {"major": 5, "minor": 76, "dateTime": "2026-01-01T00:00:00-03:00"}, "poll")
         self.assertFalse(event["success"])
+
+    def test_normalize_event_ignores_non_face_minor_codes(self):
+        # minor 21/22 = contato de porta abriu/fechou — mesmo stream de AcsEvent do
+        # reconhecimento facial, mas não é uma tentativa de acesso (validado ao vivo
+        # contra um DS-K1T671MF-L real). Sem esse filtro viram "Negado" falso no painel.
+        self.assertIsNone(_normalize_event("t1", {"major": 5, "minor": 21, "dateTime": "2026-01-01T00:00:00-03:00"}, "poll"))
+        self.assertIsNone(_normalize_event("t1", {"major": 5, "minor": 22, "dateTime": "2026-01-01T00:00:00-03:00"}, "poll"))
+
+    def test_normalize_event_extracts_picture_url(self):
+        event = _normalize_event("t1", {
+            "major": 5, "minor": 75, "employeeNo": "123", "dateTime": "2026-01-01T00:00:00-03:00",
+            "pictureURL": "http://192.168.1.100/LOCALS/pic/foo.jpeg@WEB1",
+        }, "poll")
+        self.assertEqual(event["picture_url"], "http://192.168.1.100/LOCALS/pic/foo.jpeg@WEB1")
+
+    def test_normalize_event_no_picture_url(self):
+        event = _normalize_event("t1", {"major": 5, "minor": 76, "dateTime": "2026-01-01T00:00:00-03:00"}, "poll")
+        self.assertIsNone(event["picture_url"])
+
+    def test_normalize_event_extracts_device_name(self):
+        # cardholder name que o próprio Hikvision manda no AcsEvent (validado ao vivo
+        # contra um DS-K1T671MF-L real) — só existe pra quem foi enrolado direto no
+        # device, sem passar pelo roster local/ZAccess.
+        event = _normalize_event("t1", {
+            "major": 5, "minor": 75, "employeeNo": "123", "dateTime": "2026-01-01T00:00:00-03:00",
+            "name": "Bernardo (Teste)",
+        }, "poll")
+        self.assertEqual(event["device_name"], "Bernardo (Teste)")
+
+    def test_normalize_event_no_device_name(self):
+        event = _normalize_event("t1", {"major": 5, "minor": 76, "dateTime": "2026-01-01T00:00:00-03:00"}, "poll")
+        self.assertIsNone(event["device_name"])
 
 
 class HikvisionEventsFetchTest(unittest.TestCase):

@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 # minor code 75 = reconhecimento facial bem-sucedido (76 = malsucedido) — mesma
 # convenção documentada no eventParser.ts do z-edu pra terminais Hikvision.
 _SUCCESS_MINOR_CODES = {75}
+_FAILURE_MINOR_CODES = {76}
+# major=5 tem MUITOS outros minor codes no mesmo stream de AcsEvent (ex.: 21/22 =
+# contato de porta abriu/fechou) — validado ao vivo contra um DS-K1T671MF-L real
+# (search em AcsEvent traz esses eventos misturados com os de reconhecimento facial).
+# Sem esse filtro, cada abertura/fechamento de porta vira uma linha "Negado" falsa
+# no painel de Eventos.
+_FACE_MINOR_CODES = _SUCCESS_MINOR_CODES | _FAILURE_MINOR_CODES
 
 
 def _find_field_ci(obj, name: str):
@@ -87,11 +94,20 @@ def _normalize_event(terminal_id: str, obj, source: str) -> Optional[dict]:
         minor_raw = _find_field_ci(obj, "minor")
     major = int(major_raw) if major_raw not in (None, "") else None
     minor = int(minor_raw) if minor_raw not in (None, "") else None
+    if minor not in _FACE_MINOR_CODES:
+        return None
 
     employee_no_raw = _find_field_ci(obj, "employeeNoString")
     if employee_no_raw is None:
         employee_no_raw = _find_field_ci(obj, "employeeNo")
     employee_no = str(employee_no_raw) if employee_no_raw not in (None, "") else None
+
+    # Nome que o próprio terminal já manda no evento (cardholder name do Hikvision, ex.:
+    # "Bernardo (Teste)") — validado ao vivo contra um DS-K1T671MF-L real. Único jeito de
+    # mostrar um nome pra quem foi enrolado direto no device, fora do fluxo do ZAccess
+    # (por isso não está no roster local e o join por lá não acha nada).
+    device_name_raw = _find_field_ci(obj, "name")
+    device_name = str(device_name_raw) if isinstance(device_name_raw, str) and device_name_raw.strip() else None
 
     time_raw = _find_field_ci(obj, "dateTime")
     if time_raw is None:
@@ -109,12 +125,18 @@ def _normalize_event(terminal_id: str, obj, source: str) -> Optional[dict]:
         time, employee_no or (str(serial_no) if serial_no else "unknown"),
     ])
 
-    success = minor is not None and minor in _SUCCESS_MINOR_CODES
+    success = minor in _SUCCESS_MINOR_CODES
+
+    # URL completa (fora do namespace /ISAPI/, mesmo host) da foto capturada na hora do
+    # reconhecimento — só presente em eventos minor=75 (match bem-sucedido). Baixada depois
+    # por quem chama (precisa do client/credenciais, que _normalize_event não tem).
+    picture_url_raw = _find_field_ci(obj, "pictureURL")
+    picture_url = picture_url_raw if isinstance(picture_url_raw, str) and picture_url_raw else None
 
     return {
         "dedupe_key": dedupe_key, "terminal_id": terminal_id, "employee_no": employee_no,
         "time": time, "direction": direction, "major_event_type": major, "minor_event_type": minor,
-        "success": success, "source": source, "raw": obj,
+        "success": success, "source": source, "picture_url": picture_url, "device_name": device_name, "raw": obj,
     }
 
 

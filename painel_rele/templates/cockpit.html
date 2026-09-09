@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Cockpit{% endblock %}
+
+{% block page_title %}Cockpit{% endblock %}
+{% block page_subtitle %}Abra portas e terminais na hora, sem precisar do painel completo.{% endblock %}
+
+{% block extra_head %}
+<style>
+    .door-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
+    .door-card {
+        background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+        padding: 16px; display: flex; flex-direction: column; gap: 10px;
+        transition: border-color 0.15s ease;
+    }
+    .door-card:hover { border-color: var(--z-violet-500); }
+    .door-card-head { display: flex; align-items: center; gap: 8px; }
+    .door-icon {
+        width: 30px; height: 30px; border-radius: var(--radius-md); background: var(--accent);
+        color: var(--primary); display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .door-card .door-name { font-weight: 700; font-size: 0.88rem; color: var(--foreground); line-height: 1.2; }
+    .door-card .door-hint { font-size: 0.7rem; color: var(--muted-foreground); }
+    .btn-open {
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        border: none; border-radius: var(--radius-md); padding: 10px; font-size: 0.84rem; font-weight: 600;
+        font-family: var(--font-sans); cursor: pointer; background: var(--primary); color: #fff;
+        transition: background-color 0.15s ease;
+    }
+    .btn-open:hover:not(:disabled) { background: var(--z-violet-500); }
+    .btn-open:disabled { opacity: 0.7; cursor: default; }
+    .btn-open.opened { background: var(--success); }
+    .door-msg { font-size: 0.7rem; min-height: 1.1em; color: var(--destructive); }
+
+    .live-chip {
+        display: inline-flex; align-items: center; gap: 6px; font-size: 0.66rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.04em; color: var(--success); background: #f0fdf4;
+        border: 1px solid #bbf7d0; border-radius: 999px; padding: 3px 9px;
+    }
+    .live-chip .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--success); }
+
+    .event-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .event-row:last-child { border-bottom: none; }
+    .event-photo { width: 42px; height: 42px; border-radius: var(--radius-md); object-fit: cover; background: var(--muted); flex-shrink: 0; cursor: zoom-in; }
+    .event-photo.placeholder { display: flex; align-items: center; justify-content: center; font-size: 0.85rem; color: var(--muted-foreground); cursor: default; }
+    .event-info { flex: 1; min-width: 0; }
+    .event-name { font-weight: 600; font-size: 0.85rem; color: var(--foreground); }
+    .event-meta { font-size: 0.7rem; color: var(--muted-foreground); margin-top: 2px; }
+
+    .photo-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; z-index: 100; }
+    .photo-lightbox img { max-width: min(90vw, 640px); max-height: 85vh; border-radius: var(--radius-lg); }
+
+    .ev-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+    .search-field { position: relative; }
+    .search-field svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted-foreground); pointer-events: none; }
+    .search-field input { padding-left: 32px !important; }
+    .ev-filters input, .ev-filters select {
+        padding: 7px 9px; font-size: 0.78rem; width: 100%; font-family: inherit;
+        border-radius: var(--radius-md); border: 1px solid var(--input);
+        background: var(--card); color: var(--foreground); appearance: none;
+    }
+    .ev-filters select {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%235b6472' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 8px center; background-size: 15px;
+        padding-right: 28px;
+    }
+    .ev-filters input:focus, .ev-filters select:focus {
+        outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
+    }
+    .ev-filters .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .ev-filters .row-actions { display: flex; justify-content: space-between; align-items: center; }
+    .ev-filters .row-actions .results-count { font-size: 0.72rem; color: var(--muted-foreground); }
+    .btn-clear { display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; padding: 5px 10px; }
+
+    .ev-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
+    .ev-pagination span { font-size: 0.74rem; color: var(--muted-foreground); }
+    .ev-pagination button { font-size: 0.72rem; padding: 5px 10px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="content-grid two-col">
+    <section class="column">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.power() }}Portas</span>
+                <span class="panel-sub">Relés</span>
+            </div>
+            <p class="panel-desc tight">Abra na hora, sem precisar de reconhecimento facial.</p>
+            <div class="door-grid" id="relayGrid">
+                {% for r in relays %}
+                <div class="door-card" data-relay="{{ r.id }}">
+                    <div class="door-card-head">
+                        <span class="door-icon">{{ icons.door_open() }}</span>
+                        <span class="door-name">Porta {{ r.id }}</span>
+                    </div>
+                    <span class="door-hint">{{ (r.pulseSeconds ~ 's de pulso') if r.pulseSeconds > 0 else 'sem pulso — abre e fica aberta' }}</span>
+                    <button type="button" class="btn-open" data-action="open-relay">{{ icons.door_open(15) }}Abrir</button>
+                    <div class="door-msg"></div>
+                </div>
+                {% endfor %}
+            </div>
+            {% if not relays %}
+            <p class="empty-hint">Nenhuma porta liberada pra esse usuário.</p>
+            {% endif %}
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.scan_face() }}Terminais faciais</span>
+                <span class="panel-sub">Hikvision &amp; Intelbras</span>
+            </div>
+            <p class="panel-desc tight">Abertura remota direto no terminal, sem depender do ZAccess estar no ar.</p>
+            <div class="door-grid" id="terminalGrid">
+                {% for t in terminals %}
+                <div class="door-card" data-terminal="{{ t.id }}">
+                    <div class="door-card-head">
+                        <span class="door-icon">{{ icons.scan_face() }}</span>
+                        <span class="door-name">{{ t.name or t.host }}</span>
+                    </div>
+                    <span class="door-hint">{{ t.host }}</span>
+                    <button type="button" class="btn-open" data-action="open-terminal">{{ icons.key_round(15) }}Abrir porta</button>
+                    <div class="door-msg"></div>
+                </div>
+                {% endfor %}
+            </div>
+            {% if not terminals %}
+            <p class="empty-hint">Nenhum terminal facial liberado pra esse usuário.</p>
+            {% endif %}
+        </div>
+    </section>
+
+    <section class="column">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.history() }}Eventos recentes</span>
+                <span class="live-chip"><span class="dot"></span>Ao vivo</span>
+            </div>
+
+            <div class="ev-filters">
+                <div class="search-field">
+                    {{ icons.search(14) }}
+                    <input type="text" id="fSearch" placeholder="Buscar por nome ou matrícula">
+                </div>
+                <div class="row2">
+                    <select id="fTerminal"><option value="">Todos os terminais</option></select>
+                    <select id="fStatus">
+                        <option value="">Todos os resultados</option>
+                        <option value="success">Liberado</option>
+                        <option value="fail">Negado</option>
+                    </select>
+                </div>
+                <div class="row-actions">
+                    <span class="results-count" id="resultsCount"></span>
+                    <button type="button" class="btn btn-outline btn-clear" id="clearFilters">{{ icons.x(12) }}Limpar</button>
+                </div>
+            </div>
+
+            <div id="eventsList"></div>
+            <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum evento encontrado.</p>
+
+            <div class="ev-pagination" id="pagination" style="display:none;">
+                <button type="button" class="btn btn-outline" id="prevPage">‹</button>
+                <span id="pageInfo"></span>
+                <button type="button" class="btn btn-outline" id="nextPage">›</button>
+            </div>
+        </div>
+    </section>
+</div>
+
+<div class="photo-lightbox" id="photoLightbox" style="display:none;">
+    <img id="photoLightboxImg" src="" alt="Foto do evento ampliada">
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // --- abrir porta / terminal ---
+    function bindOpenButtons(gridId, urlFn) {
+        var grid = document.getElementById(gridId);
+        if (!grid) return;
+        grid.addEventListener('click', function(e) {
+            var btn = e.target.closest('[data-action]');
+            if (!btn || btn.disabled) return;
+            var card = btn.closest('.door-card');
+            var msg = card.querySelector('.door-msg');
+            var label = btn.lastChild;
+            btn.disabled = true;
+            msg.textContent = '';
+            fetch(urlFn(card), { method: 'POST' })
+                .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+                .then(function(o) {
+                    if (o.ok && o.json.success) {
+                        label.textContent = 'Aberta ✓';
+                        btn.classList.add('opened');
+                        setTimeout(function() {
+                            label.textContent = btn.closest('#terminalGrid') ? 'Abrir porta' : 'Abrir';
+                            btn.classList.remove('opened');
+                            btn.disabled = false;
+                        }, 2500);
+                    } else {
+                        msg.textContent = o.json.message || o.json.reason || 'Falha ao abrir.';
+                        btn.disabled = false;
+                    }
+                })
+                .catch(function() {
+                    msg.textContent = 'Erro de conexão.';
+                    btn.disabled = false;
+                });
+        });
+    }
+    bindOpenButtons('relayGrid', function(card) { return '/api/cockpit/relays/' + encodeURIComponent(card.dataset.relay) + '/open'; });
+    bindOpenButtons('terminalGrid', function(card) { return '/api/cockpit/face-terminals/' + encodeURIComponent(card.dataset.terminal) + '/open'; });
+
+    // --- eventos recentes (mesmo padrão de events.html) ---
+    var container = document.getElementById('eventsList');
+    var emptyHint = document.getElementById('emptyHint');
+    var lightbox = document.getElementById('photoLightbox');
+    var lightboxImg = document.getElementById('photoLightboxImg');
+
+    function closeLightbox() { lightbox.style.display = 'none'; lightboxImg.src = ''; }
+    container && container.addEventListener('click', function(e) {
+        var img = e.target.closest('img.event-photo');
+        if (!img) return;
+        lightboxImg.src = img.src;
+        lightbox.style.display = 'flex';
+    });
+    lightbox.addEventListener('click', closeLightbox);
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeLightbox(); });
+
+    function fmtTime(iso) {
+        var d = new Date(iso);
+        return isNaN(d.getTime()) ? iso : d.toLocaleString('pt-BR');
+    }
+
+    function rowHtml(e) {
+        var photo = e.hasPhoto
+            ? '<img class="event-photo" src="/api/events/' + encodeURIComponent(e.dedupeKey) + '/photo" alt="">'
+            : '<div class="event-photo placeholder">' + (e.success ? '?' : '✕') + '</div>';
+        return '' +
+        '<div class="event-row">' +
+            photo +
+            '<div class="event-info">' +
+                '<div class="event-name">' + escapeHtml(e.name || e.employeeNo || 'Desconhecido') + '</div>' +
+                '<div class="event-meta">' + escapeHtml(e.terminalName) + ' · ' + escapeHtml(fmtTime(e.time)) + '</div>' +
+            '</div>' +
+            '<span class="badge ' + (e.success ? 'success' : 'fail') + '">' + (e.success ? 'Liberado' : 'Negado') + '</span>' +
+        '</div>';
+    }
+
+    var fSearch = document.getElementById('fSearch');
+    var fTerminal = document.getElementById('fTerminal');
+    var fStatus = document.getElementById('fStatus');
+    var resultsCount = document.getElementById('resultsCount');
+    var pagination = document.getElementById('pagination');
+    var pageInfo = document.getElementById('pageInfo');
+    var evState = { page: 1, pageSize: 10 };
+    var searchDebounce = null;
+
+    function currentQuery() {
+        var params = new URLSearchParams();
+        if (fSearch.value.trim()) params.set('q', fSearch.value.trim());
+        if (fTerminal.value) params.set('terminal', fTerminal.value);
+        if (fStatus.value) params.set('status', fStatus.value);
+        params.set('page', evState.page);
+        params.set('pageSize', evState.pageSize);
+        return params.toString();
+    }
+
+    function loadEvents() {
+        fetch('/api/events?' + currentQuery())
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var events = data.events || [];
+                container.innerHTML = events.map(rowHtml).join('');
+                emptyHint.style.display = events.length === 0 ? 'block' : 'none';
+                resultsCount.textContent = data.total + (data.total === 1 ? ' evento' : ' eventos');
+                pagination.style.display = data.totalPages > 1 ? 'flex' : 'none';
+                pageInfo.textContent = data.page + '/' + data.totalPages;
+                document.getElementById('prevPage').disabled = data.page <= 1;
+                document.getElementById('nextPage').disabled = data.page >= data.totalPages;
+            })
+            .catch(function() {});
+    }
+
+    function reloadFromFilters() {
+        evState.page = 1;
+        loadEvents();
+    }
+
+    [fTerminal, fStatus].forEach(function(el) { el.addEventListener('change', reloadFromFilters); });
+    fSearch.addEventListener('input', function() {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(reloadFromFilters, 400);
+    });
+    document.getElementById('clearFilters').addEventListener('click', function() {
+        fSearch.value = ''; fTerminal.value = ''; fStatus.value = '';
+        reloadFromFilters();
+    });
+    document.getElementById('prevPage').addEventListener('click', function() {
+        if (evState.page > 1) { evState.page -= 1; loadEvents(); }
+    });
+    document.getElementById('nextPage').addEventListener('click', function() {
+        evState.page += 1; loadEvents();
+    });
+
+    fetch('/api/events/terminals')
+        .then(function(r) { return r.json(); })
+        .then(function(terminals) {
+            terminals.forEach(function(t) {
+                var opt = document.createElement('option');
+                opt.value = t.id; opt.textContent = t.name;
+                fTerminal.appendChild(opt);
+            });
+        })
+        .catch(function() {});
+
+    loadEvents();
+    setInterval(loadEvents, 15000);
+})();
+</script>
+{% endblock %}

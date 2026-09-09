@@ -207,6 +207,24 @@ class HikvisionClient:
         except Exception as e:
             return {"ok": False, "reason": str(e)}
 
+    def fetch_picture(self, picture_url: str) -> bytes | None:
+        """Baixa a foto capturada num evento de reconhecimento (campo `pictureURL` de um
+        AcsEvent minor=75) — URL completa servida pelo device fora do namespace /ISAPI/
+        (ex.: /LOCALS/pic/...), mesma Digest auth. Validado ao vivo contra um DS-K1T671MF-L
+        real. Nunca lança — quem chama trata None como 'sem foto disponível'."""
+        try:
+            res = requests.get(
+                picture_url, auth=HTTPDigestAuth(self.terminal.username, self.terminal.password),
+                verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as e:
+            logger.warning("falha ao baixar foto do evento (%s): %s", self.terminal.host, e)
+            return None
+        if 200 <= res.status_code < 300 and res.content:
+            return res.content
+        logger.warning("foto do evento indisponível (%s): HTTP %s", self.terminal.host, res.status_code)
+        return None
+
     def check_health(self) -> dict:
         """GET System/deviceInfo — endpoint ISAPI padrão presente em praticamente todo device
         Hikvision, leve e sem efeito colateral. Só pra status online/offline no painel."""

@@ -1,128 +1,81 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zapy – Dispositivo ZAccess</title>
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <style>
-        .shell { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.1fr); gap: 18px; }
-        @media (max-width: 900px) { .shell { grid-template-columns: minmax(0, 1fr); } }
-    </style>
-</head>
-<body>
-    <div class="layout">
-        <header class="topbar">
-            <div class="topbar-left">
-                <img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="Zapy">
-                <div class="topbar-title">
-                    <span>Zapy – Dispositivo ZAccess</span>
-                    <span>Painel local do dispositivo físico</span>
-                </div>
+{% extends "base.html" %}
+{% block title_suffix %} – Painel{% endblock %}
+
+{% block page_title %}Painel{% endblock %}
+{% block page_subtitle %}Controle direto dos relés e leitura dos sensores/botões deste dispositivo.{% endblock %}
+{% block page_actions %}
+<div class="chip"><span class="chip-dot"></span><span class="chip-label">Online</span></div>
+{% endblock %}
+
+{% block content %}
+<div class="content-grid two-col">
+    <section class="column">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Relés do dispositivo</span>
+                <span class="panel-sub">Controle direto das saídas físicas</span>
             </div>
-            <div class="topbar-right">
-                <div class="chip">
-                    <span class="chip-dot"></span>
-                    <span class="chip-label">Online</span>
-                </div>
-                <a href="/health">Saúde</a>
-                <a href="/logout">Sair</a>
-            </div>
-        </header>
-
-        <main class="shell">
-            <section class="column">
-                <div class="panel">
-                    <div class="panel-header">
-                        <span class="panel-title">Relés do dispositivo</span>
-                        <span class="panel-sub">Controle direto das saídas físicas</span>
-                    </div>
-                    <div class="grid" id="relayGrid">
-            {% for id, estado in status.items() %}
-            {% set pulse_val = pulse_config.get(id, '') %}
-            {% set pulse_sec = pulse_val if pulse_val and pulse_val != '0' else '0' %}
-            <div class="card {{ estado }}" data-relay="{{ id }}" data-pulse="{{ pulse_sec }}">
-                <div class="card-header">
-                    <span class="card-title">Relé {{ id }}</span>
-                    <span class="badge {{ estado }}">{{ estado }}</span>
-                </div>
-                <a href="/toggle/{{ id }}" class="btn-toggle {{ estado }}" data-action="toggle">{{ "DESLIGAR" if estado == "LIGADO" else "LIGAR" }}</a>
-                <p class="card-pulse {{ 'on' if pulse_sec != '0' else '' }}">Pulso: {{ pulse_sec + ' s' if pulse_sec != '0' else 'desativado' }}</p>
-            </div>
-            {% endfor %}
-                    </div>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-header">
-                        <span class="panel-title">Sensores de porta</span>
-                        <span class="panel-sub">Reed Switch NA (1–4)</span>
-                    </div>
-                    <div class="grid" id="sensorGrid">
-                        {% for id, estado in sensor_status_reed.items() %}
-                        <div class="sensor-card {{ estado }}" data-sensor="{{ id }}">
-                            <div class="card-header">
-                                <span class="card-title">Sensor {{ id }}</span>
-                                <span class="badge {{ estado }}">{{ estado }}</span>
-                            </div>
-                            <p class="pin-info">GPIO {{ sensor_pins[id] }} · Pino físico {{ sensor_pins_physical[id] }}</p>
-                        </div>
-                        {% endfor %}
-                    </div>
-                    <p class="section-caption">Ligação: reed entre GPIO e GND. Ímã perto = Fechado.</p>
-                </div>
-            </section>
-
-            <section class="column">
-                <div class="panel">
-                    <div class="panel-header">
-                        <span class="panel-title">Botões</span>
-                        <span class="panel-sub">Entradas digitais (5–8)</span>
-                    </div>
-                    <div class="grid" id="buttonGrid">
-                        {% for id, estado in sensor_status_buttons.items() %}
-                        <div class="sensor-card {{ estado }}" data-sensor="{{ id }}">
-                            <div class="card-header">
-                                <span class="card-title">Botão {{ id }}</span>
-                                <span class="badge {{ estado }}">{{ estado }}</span>
-                            </div>
-                            <p class="pin-info">GPIO {{ sensor_pins[id] }} · Pino físico {{ sensor_pins_physical[id] }}</p>
-                        </div>
-                        {% endfor %}
-                    </div>
-                    <p class="section-caption">Ligação: botão entre GPIO e GND. Pressionado = circuito fechado.</p>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-header">
-                        <span class="panel-title">Configuração</span>
-                        <span class="panel-sub">Servidor ZAccess &amp; pulsos</span>
-                    </div>
-                    <p class="panel-desc">Abra a tela de configuração para ajustar servidor, número de série, token, porta e tempos de pulso.</p>
-                    <a href="/config" class="btn btn-primary">
-                        <span>Ir para configurações</span>
-                    </a>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-header">
-                        <span class="panel-title">Terminais faciais</span>
-                        <span class="panel-sub">Hikvision &amp; Intelbras</span>
-                    </div>
-                    <p class="panel-desc">Cadastre os terminais de reconhecimento facial que este zapy controla direto (enroll, abertura remota, reboot).</p>
-                    <a href="/face-terminals" class="btn btn-primary">
-                        <span>Ir para terminais faciais</span>
-                    </a>
-                </div>
-            </section>
-        </main>
+            <div class="grid" id="relayGrid">
+    {% for id, estado in status.items() %}
+    {% set pulse_val = pulse_config.get(id, '') %}
+    {% set pulse_sec = pulse_val if pulse_val and pulse_val != '0' else '0' %}
+    <div class="card {{ estado }}" data-relay="{{ id }}" data-pulse="{{ pulse_sec }}">
+        <div class="card-header">
+            <span class="card-title">Relé {{ id }}</span>
+            <span class="badge {{ estado }}">{{ estado }}</span>
+        </div>
+        <a href="/toggle/{{ id }}" class="btn-toggle {{ estado }}" data-action="toggle">{{ "DESLIGAR" if estado == "LIGADO" else "LIGAR" }}</a>
+        <p class="card-pulse {{ 'on' if pulse_sec != '0' else '' }}">Pulso: {{ pulse_sec + ' s' if pulse_sec != '0' else 'desativado' }}</p>
     </div>
+    {% endfor %}
+            </div>
+        </div>
 
-    <script>
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Sensores de porta</span>
+                <span class="panel-sub">Reed Switch NA (1–4)</span>
+            </div>
+            <div class="grid" id="sensorGrid">
+                {% for id, estado in sensor_status_reed.items() %}
+                <div class="sensor-card {{ estado }}" data-sensor="{{ id }}">
+                    <div class="card-header">
+                        <span class="card-title">Sensor {{ id }}</span>
+                        <span class="badge {{ estado }}">{{ estado }}</span>
+                    </div>
+                    <p class="pin-info">GPIO {{ sensor_pins[id] }} · Pino físico {{ sensor_pins_physical[id] }}</p>
+                </div>
+                {% endfor %}
+            </div>
+            <p class="section-caption">Ligação: reed entre GPIO e GND. Ímã perto = Fechado.</p>
+        </div>
+    </section>
+
+    <section class="column">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Botões</span>
+                <span class="panel-sub">Entradas digitais (5–8)</span>
+            </div>
+            <div class="grid" id="buttonGrid">
+                {% for id, estado in sensor_status_buttons.items() %}
+                <div class="sensor-card {{ estado }}" data-sensor="{{ id }}">
+                    <div class="card-header">
+                        <span class="card-title">Botão {{ id }}</span>
+                        <span class="badge {{ estado }}">{{ estado }}</span>
+                    </div>
+                    <p class="pin-info">GPIO {{ sensor_pins[id] }} · Pino físico {{ sensor_pins_physical[id] }}</p>
+                </div>
+                {% endfor %}
+            </div>
+            <p class="section-caption">Ligação: botão entre GPIO e GND. Pressionado = circuito fechado.</p>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
 (function() {
     var grid = document.getElementById('relayGrid');
 
@@ -188,6 +141,5 @@
     }
     setInterval(refreshSensors, 2000);
 })();
-    </script>
-</body>
-</html>
+</script>
+{% endblock %}
