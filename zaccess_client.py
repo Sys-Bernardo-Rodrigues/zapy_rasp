@@ -342,6 +342,19 @@ def run_zaccess_client(
             except Exception:
                 pass
 
+        def _emit_card_ack(person_id: str, terminal_id: str, status: str, error: str | None = None):
+            """Canal próprio (card:enroll-ack) — face e cartão são credenciais
+            independentes no servidor (cardEnrollmentStatus separado de
+            faceEnrollmentStatus), não dá pra reaproveitar face:enroll-ack aqui."""
+            try:
+                if sio.connected:
+                    payload = {"personId": person_id, "terminalId": terminal_id, "status": status}
+                    if error:
+                        payload["error"] = error
+                    sio.emit("card:enroll-ack", payload, namespace=NAMESPACE)
+            except Exception:
+                pass
+
         @sio.on("face:enroll", namespace=NAMESPACE)
         def face_enroll(data):
             """Servidor pede pra cadastrar um rosto num terminal. Roda em thread separada
@@ -359,7 +372,10 @@ def run_zaccess_client(
             client = face_clients.get(terminal_id)
             if not client:
                 logger.error("ZAccess: face:enroll pra terminal desconhecido %s", terminal_id)
-                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                # Em thread separada: emitir a partir do próprio callback de recepção do
+                # evento trava o ack silenciosamente (reentrância no cliente socketio,
+                # validado ao vivo — sem thread, o emit nunca chega no servidor).
+                threading.Thread(target=_emit_enroll_ack, args=(person_id, terminal_id, "failed", "terminal não configurado neste zapy"), daemon=True).start()
                 return
 
             def run():
@@ -391,7 +407,7 @@ def run_zaccess_client(
             client = face_clients.get(terminal_id)
             if not client:
                 logger.error("ZAccess: face:revoke pra terminal desconhecido %s", terminal_id)
-                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                threading.Thread(target=_emit_enroll_ack, args=(person_id, terminal_id, "failed", "terminal não configurado neste zapy"), daemon=True).start()
                 return
 
             def run():
@@ -411,8 +427,7 @@ def run_zaccess_client(
         @sio.on("card:enroll", namespace=NAMESPACE)
         def card_enroll(data):
             """Servidor pede pra vincular um cartão a um terminal facial. Mesmo padrão do
-            face:enroll — roda em thread separada, mesmo formato de ack (face:enroll-ack),
-            pra reaproveitar o mesmo listener no servidor/painel."""
+            face:enroll — roda em thread separada, ack num canal próprio (card:enroll-ack)."""
             person_id = str(data.get("personId") or "")
             employee_no = str(data.get("employeeNo") or person_id)
             terminal_id = str(data.get("terminalId") or "")
@@ -425,17 +440,17 @@ def run_zaccess_client(
             client = face_clients.get(terminal_id)
             if not client:
                 logger.error("ZAccess: card:enroll pra terminal desconhecido %s", terminal_id)
-                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                threading.Thread(target=_emit_card_ack, args=(person_id, terminal_id, "failed", "terminal não configurado neste zapy"), daemon=True).start()
                 return
 
             def run():
                 try:
                     client.enroll_card(employee_no, name, card_no)
                     logger.info("ZAccess: cartão de %s cadastrado no terminal %s", name, terminal_id)
-                    _emit_enroll_ack(person_id, terminal_id, "card-enrolled")
+                    _emit_card_ack(person_id, terminal_id, "enrolled")
                 except Exception as e:
                     logger.error("ZAccess: falha ao cadastrar cartão de %s no terminal %s - %s", name, terminal_id, e)
-                    _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+                    _emit_card_ack(person_id, terminal_id, "failed", str(e))
 
             threading.Thread(target=run, daemon=True).start()
 
@@ -453,17 +468,17 @@ def run_zaccess_client(
             client = face_clients.get(terminal_id)
             if not client:
                 logger.error("ZAccess: card:revoke pra terminal desconhecido %s", terminal_id)
-                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                threading.Thread(target=_emit_card_ack, args=(person_id, terminal_id, "failed", "terminal não configurado neste zapy"), daemon=True).start()
                 return
 
             def run():
                 try:
                     client.delete_card(employee_no, card_no)
                     logger.info("ZAccess: cartão de %s removido do terminal %s", employee_no, terminal_id)
-                    _emit_enroll_ack(person_id, terminal_id, "card-revoked")
+                    _emit_card_ack(person_id, terminal_id, "revoked")
                 except Exception as e:
                     logger.error("ZAccess: falha ao remover cartão de %s do terminal %s - %s", employee_no, terminal_id, e)
-                    _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+                    _emit_card_ack(person_id, terminal_id, "failed", str(e))
 
             threading.Thread(target=run, daemon=True).start()
 
