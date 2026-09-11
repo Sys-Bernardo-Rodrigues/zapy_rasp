@@ -5,9 +5,13 @@ HTTP API do Intelbras diretamente. Duck typing: as duas classes implementam a
 mesma interface por convenção, sem precisar de uma base abstrata pra dois casos.
 """
 from .hikvision_client import HikvisionClient, HikvisionTerminal
+from .intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
 from .intelbras_client import IntelbrasClient, IntelbrasTerminal
 
-VENDORS = ("hikvision", "intelbras")
+# "intelbras" = HTTP API nativa do XPE (intelbras_client.py). "intelbras_biot" = API
+# cgi-bin/Digest da linha Bio-T/SS (intelbras_biot_client.py) — protocolo diferente,
+# mesmo fabricante, por isso vendor separado em vez de um parâmetro "modelo".
+VENDORS = ("hikvision", "intelbras", "intelbras_biot")
 
 
 def create_face_client(
@@ -32,5 +36,9 @@ def create_face_client(
                 host=host, port=port, username=username, password=password,
                 https=https, verify_tls=verify_tls, relay_level=relay_level,
             )
+        )
+    if vendor == "intelbras_biot":
+        return IntelbrasBioTClient(
+            IntelbrasBioTTerminal(host=host, port=port, username=username, password=password, https=https, verify_tls=verify_tls)
         )
     raise ValueError(f"vendor desconhecido: {vendor!r} (esperado {VENDORS!r})")

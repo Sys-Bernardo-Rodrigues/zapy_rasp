@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
 def _add_terminal_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--vendor", required=True, choices=["hikvision", "intelbras"])
+    p.add_argument("--vendor", required=True, choices=["hikvision", "intelbras", "intelbras_biot"])
     p.add_argument("--host", required=True)
     p.add_argument("--port", type=int, default=None, help="padrão: 443 com --https, senão 80")
     p.add_argument("--user", required=True)

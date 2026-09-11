@@ -18,9 +18,11 @@ from face_agent import (
     create_face_client,
     enforce_schedule,
     fetch_hikvision_events_since,
+    fetch_intelbras_biot_events_since,
     fetch_intelbras_events_since,
 )
 from face_agent.hikvision_client import HikvisionClient
+from face_agent.intelbras_biot_client import IntelbrasBioTClient
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +170,10 @@ def run_zaccess_client(
         def _sync_event_pollers():
             """(Re)inicia um EventsPoller por terminal facial configurado, parando os que
             saíram da config (ex.: terminal removido no painel). Hikvision usa AcsEvent;
-            Intelbras só tem doorlog — mesma assimetria do plano de integração facial (seção
-            6.3), refletida aqui na escolha da função de fetch por tipo de client."""
+            Intelbras XPE só tem doorlog; Intelbras Bio-T/SS usa recordFinder.cgi — três
+            protocolos, mesma assimetria do plano de integração facial (seção 6.3),
+            refletida aqui na escolha da função de fetch por tipo de client. Hikvision e
+            Bio-T expõem URL de foto por evento (fetch_picture); XPE não."""
             for tid in list(event_pollers.keys()):
                 if tid not in face_clients:
                     _, stop_evt = event_pollers.pop(tid)
@@ -183,6 +187,13 @@ def run_zaccess_client(
                         events, next_cursor = fetch_hikvision_events_since(c, t, cursor)
                         # Baixa a foto capturada na hora (pictureURL só vem em match bem-sucedido)
                         # antes de devolver — assim já entra persistida no primeiro add_events.
+                        for event in events:
+                            url = event.get("picture_url")
+                            event["picture"] = c.fetch_picture(url) if url else None
+                        return events, next_cursor
+                elif isinstance(client, IntelbrasBioTClient):
+                    def fetch(cursor, c=client, t=tid):
+                        events, next_cursor = fetch_intelbras_biot_events_since(c, t, cursor)
                         for event in events:
                             url = event.get("picture_url")
                             event["picture"] = c.fetch_picture(url) if url else None

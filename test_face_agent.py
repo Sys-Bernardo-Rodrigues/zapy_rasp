@@ -18,10 +18,12 @@ from face_agent.events_poller import (
     _find_field_ci,
     _normalize_event,
     fetch_hikvision_events_since,
+    fetch_intelbras_biot_events_since,
     fetch_intelbras_events_since,
 )
 from face_agent.face_client_factory import create_face_client
 from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClient, HikvisionTerminal
+from face_agent.intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
 from face_agent.intelbras_client import IntelbrasClient, IntelbrasTerminal
 from face_agent.local_store import LocalStore, PollCursor, RosterEntry
 from face_agent.schedule_enforcer import enforce_schedule, is_within_schedule
@@ -70,6 +72,88 @@ class IntelbrasClientTest(unittest.TestCase):
         self._client(relay_level=1).open_door()
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["level"], 1)
+
+
+class IntelbrasBioTClientTest(unittest.TestCase):
+    def _client(self, **kwargs):
+        return IntelbrasBioTClient(IntelbrasBioTTerminal(host="10.0.0.3", port=80, username="admin", password="pw", **kwargs))
+
+    @patch("face_agent.intelbras_biot_client.requests.post")
+    def test_enroll_create(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, text="OK"),  # AccessUser insertMulti
+            MagicMock(status_code=200, text="OK"),  # AccessFace insertMulti
+        ]
+        status = self._client().enroll_face("123", "Fulano", JPEG)
+        self.assertEqual(status, "created")
+        first_call = mock_post.call_args_list[0]
+        self.assertEqual(first_call.kwargs["params"], {"action": "insertMulti"})
+        self.assertEqual(first_call.kwargs["json"]["UserList"][0]["UserID"], "123")
+
+    @patch("face_agent.intelbras_biot_client.requests.post")
+    def test_enroll_update_when_already_exists(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, text="accessControlErrorUserAlreadyExist"),  # insertMulti
+            MagicMock(status_code=200, text="OK"),  # updateMulti (usuário)
+            MagicMock(status_code=200, text="OK"),  # AccessFace insertMulti
+        ]
+        status = self._client().enroll_face("123", "Fulano", JPEG)
+        self.assertEqual(status, "updated")
+        self.assertEqual(mock_post.call_count, 3)
+
+    def test_enroll_rejects_invalid_jpeg(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_face("123", "Fulano", b"not a jpeg")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_open_door_never_raises(self, mock_get):
+        mock_get.side_effect = requests.exceptions.ConnectionError("timeout")
+        result = self._client().open_door()
+        self.assertEqual(result, {"ok": False, "reason": "falha de rede ao chamar 10.0.0.3: timeout"})
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_open_door_uses_channel(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text="OK")
+        self._client(channel=2).open_door()
+        sent = mock_get.call_args.kwargs["params"]
+        self.assertEqual(sent["channel"], 2)
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_check_health_parses_kv(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text="version=2.000.00IB003.0.R,build:2021-06-22")
+        info = self._client().check_health()
+        self.assertEqual(info["version"], "2.000.00IB003.0.R")
+        self.assertEqual(info["build"], "2021-06-22")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_delete_user_info_raises_on_error(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text="accessControlErrorRelevantUserNotFound")
+        with self.assertRaises(FaceProvisioningError):
+            self._client().delete_user_info("123")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_fetch_access_records_parses_indexed_fields(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text=(
+            "found=2\r\n"
+            "records[0].RecNo=1\r\n"
+            "records[0].UserID=123\r\n"
+            "records[1].RecNo=2\r\n"
+            "records[1].UserID=\r\n"
+        ))
+        records = self._client().fetch_access_records(0, 1)
+        self.assertEqual(records, [{"RecNo": "1", "UserID": "123"}, {"RecNo": "2", "UserID": ""}])
+        sent = mock_get.call_args.kwargs["params"]
+        self.assertEqual(sent["name"], "AccessControlCardRec")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_fetch_picture_returns_none_on_network_error(self, mock_get):
+        mock_get.side_effect = requests.exceptions.ConnectionError("boom")
+        self.assertIsNone(self._client().fetch_picture("/pic/a.jpg"))
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_fetch_picture_returns_bytes_on_success(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, content=JPEG)
+        self.assertEqual(self._client().fetch_picture("/pic/a.jpg"), JPEG)
 
 
 class HikvisionClientTest(unittest.TestCase):
@@ -164,8 +248,10 @@ class FaceClientFactoryTest(unittest.TestCase):
     def test_picks_class_by_vendor(self):
         hik = create_face_client("hikvision", host="x", port=80, username="a", password="b")
         intel = create_face_client("intelbras", host="x", port=80, username="a", password="b")
+        biot = create_face_client("intelbras_biot", host="x", port=80, username="a", password="b")
         self.assertIsInstance(hik, HikvisionClient)
         self.assertIsInstance(intel, IntelbrasClient)
+        self.assertIsInstance(biot, IntelbrasBioTClient)
 
 
 class FaceTerminalsStoreTest(unittest.TestCase):
@@ -571,6 +657,46 @@ class IntelbrasEventsFetchTest(unittest.TestCase):
         self.assertEqual(events[0]["employee_no"], "123")
         self.assertIsNone(events[1]["employee_no"])
         self.assertEqual(next_cursor.search_id, "11")
+
+
+class IntelbrasBioTEventsFetchTest(unittest.TestCase):
+    def test_first_cycle_anchors_cursor_without_events(self):
+        client = MagicMock()
+        client.fetch_access_records.return_value = [{"RecNo": "10"}, {"RecNo": "15"}]
+
+        events, next_cursor = fetch_intelbras_biot_events_since(client, "t1", PollCursor(terminal_id="t1"))
+
+        self.assertEqual(events, [])
+        self.assertEqual(next_cursor.search_id, "15")
+
+    def test_returns_only_new_items_and_maps_error_to_failure(self):
+        client = MagicMock()
+        client.fetch_access_records.return_value = [
+            {"RecNo": "10", "CreateTime": "1735732800", "ErrorCode": "0", "UserID": "123", "Type": "Entry", "URL": "/pic/a.jpg"},
+            {"RecNo": "11", "CreateTime": "1735732900", "ErrorCode": "16", "UserID": "", "Type": "Entry"},
+        ]
+
+        events, next_cursor = fetch_intelbras_biot_events_since(client, "t1", PollCursor(terminal_id="t1", search_id="9"))
+
+        self.assertEqual(len(events), 2)
+        self.assertTrue(events[0]["success"])
+        self.assertEqual(events[0]["employee_no"], "123")
+        self.assertEqual(events[0]["direction"], "in")
+        self.assertEqual(events[0]["picture_url"], "/pic/a.jpg")
+        self.assertFalse(events[1]["success"])
+        self.assertIsNone(events[1]["employee_no"])
+        self.assertEqual(next_cursor.search_id, "11")
+
+    def test_ignores_items_already_seen(self):
+        client = MagicMock()
+        client.fetch_access_records.return_value = [
+            {"RecNo": "9", "CreateTime": "1735732800", "ErrorCode": "0", "UserID": "1", "Type": "Entry"},
+        ]
+
+        events, next_cursor = fetch_intelbras_biot_events_since(client, "t1", PollCursor(terminal_id="t1", search_id="9"))
+
+        self.assertEqual(events, [])
+        self.assertEqual(next_cursor.search_id, "9")
 
     def test_ignores_items_already_seen(self):
         client = MagicMock()

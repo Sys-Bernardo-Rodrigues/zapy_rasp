@@ -13,9 +13,10 @@ um único formato de evento normalizado na saída.
 import logging
 import re
 import threading
+import time
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .errors import FaceProvisioningError
@@ -284,6 +285,68 @@ def _intelbras_doorlog_to_event(terminal_id: str, direction: str, item: dict) ->
         "employee_no": employee_no, "time": time, "direction": direction,
         "major_event_type": None, "minor_event_type": None, "success": success,
         "source": "poll", "raw": item,
+    }
+
+
+# --- Intelbras Bio-T/SS: poll via recordFinder.cgi (AccessControlCardRec) ---
+
+_BIOT_POLL_WINDOW_SECONDS = 300  # janela de busca por ciclo, bem maior que os 15s do
+# poll — cobre atraso/falha de um ciclo sem perder evento; overlap é inofensivo porque
+# a dedupe é por RecNo, não pela janela de tempo.
+_BRT = timezone(timedelta(hours=-3))  # mesmo racional do doorlog do XPE: só opera no Brasil por ora
+
+
+def fetch_intelbras_biot_events_since(client, terminal_id: str, cursor: PollCursor) -> tuple[list[dict], PollCursor]:
+    """Busca eventos novos via recordFinder.cgi (AccessControlCardRec) — janela de tempo
+    (StartTime/EndTime, epoch), dedupe client-side por RecNo (sequencial, único por
+    terminal) maior que o cursor, mesmo racional do doorlog/get do XPE (fetch_intelbras_events_since).
+    Sem endpoint dedicado a evento facial (diferente do doorlog do XPE): AccessControlCardRec
+    mistura face/cartão/senha no mesmo log — sem legenda documentada pro campo Method, não
+    dá pra filtrar só facial com segurança, então todo acesso registrado entra.
+    ponytail: revisitar o filtro por método se a doc um dia publicar a tabela de Method."""
+    now = int(time.time())
+    items = client.fetch_access_records(now - _BIOT_POLL_WINDOW_SECONDS, now)
+    last_seen_recno = int(cursor.search_id) if cursor.search_id is not None else None
+
+    if last_seen_recno is None:
+        # Primeira execução (sem cursor persistido): não enfileira o que já está na janela,
+        # só ancora o cursor no maior RecNo visto — não inunda a fila no boot do agente.
+        max_recno = max((int(i["RecNo"]) for i in items if i.get("RecNo")), default=0)
+        return [], PollCursor(terminal_id=terminal_id, last_event_time=cursor.last_event_time, search_id=str(max_recno))
+
+    new_items = sorted((i for i in items if i.get("RecNo") and int(i["RecNo"]) > last_seen_recno), key=lambda i: int(i["RecNo"]))
+    events = [e for e in (_biot_record_to_event(terminal_id, i) for i in new_items) if e is not None]
+    max_recno = max([int(i["RecNo"]) for i in new_items], default=last_seen_recno)
+
+    next_cursor = PollCursor(
+        terminal_id=terminal_id,
+        last_event_time=events[-1]["time"] if events else cursor.last_event_time,
+        search_id=str(max_recno),
+    )
+    return events, next_cursor
+
+
+def _biot_record_to_event(terminal_id: str, item: dict) -> Optional[dict]:
+    rec_no = item.get("RecNo")
+    create_time = item.get("CreateTime")
+    if not rec_no or not create_time:
+        return None
+    try:
+        epoch = int(create_time)
+    except ValueError:
+        return None
+    time_str = datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone(_BRT).isoformat()
+    # ErrorCode "0" = sem erro, validado contra os exemplos da doc oficial (Status=1 +
+    # ErrorCode=0 em acesso liberado; Status=0 + ErrorCode=16 em acesso negado).
+    success = item.get("ErrorCode") == "0"
+    user_id = (item.get("UserID") or "").strip()
+    employee_no = user_id if success and user_id else None
+    picture_path = (item.get("URL") or "").strip() or None
+    return {
+        "dedupe_key": f"{terminal_id}:biot:{rec_no}", "terminal_id": terminal_id,
+        "employee_no": employee_no, "time": time_str, "direction": _normalize_direction(item.get("Type")),
+        "major_event_type": None, "minor_event_type": None, "success": success,
+        "source": "poll", "picture_url": picture_path, "raw": item,
     }
 
 
