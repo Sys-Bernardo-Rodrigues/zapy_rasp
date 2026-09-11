@@ -10,6 +10,7 @@ um DS-K1T671MF-L real, firmware V3.7.0. Não reinventa o handshake Digest
 import json
 import logging
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -38,6 +39,11 @@ MAX_CONSEC_AUTH_FAILURES = 3
 CIRCUIT_OPEN_SECONDS = 30 * 60
 
 REQUEST_TIMEOUT_SECONDS = 10
+
+# Guarda de segurança pra clear_all_users: 100 usuários por lote, 500 lotes = 50 mil
+# usuários — bem acima de qualquer device real. Só existe pra nunca rodar pra sempre se o
+# device tiver algum bug (search sempre devolvendo os mesmos itens após o delete).
+_MAX_CLEAR_ALL_BATCHES = 500
 
 
 @dataclass
@@ -179,6 +185,44 @@ class HikvisionClient:
         res = self.request("PUT", "AccessControl/UserInfo/Delete", json_body=body)
         if not (200 <= res.status_code < 300):
             raise FaceProvisioningError(f"falha ao apagar UserInfo ({res.status_code}): {res.text}")
+
+    def clear_all_users(self) -> int:
+        """Apaga TODOS os UserInfo (e face/cartão/digital associados) do terminal — zera o
+        device inteiro. Sem endpoint dedicado de 'apagar tudo' nesse firmware
+        (UserInfoDetail/Delete existe mas é um job assíncrono com schema não documentado
+        publicamente — não usado aqui por falta de confiança na forma exata do payload):
+        lista via UserInfo/Search (paginado, mesmo padrão do AcsEvent) e apaga em lotes via
+        UserInfo/Delete. Busca sempre da posição 0 — cada lote apagado encolhe a lista, um
+        offset incremental pularia gente. Destrutivo e irreversível no hardware — quem
+        chama é responsável por confirmar antes. Retorna quantos usuários foram removidos.
+        Não validado ao vivo ainda."""
+        search_id = str(uuid.uuid4())
+        removed = 0
+        for _ in range(_MAX_CLEAR_ALL_BATCHES):
+            res = self.request("POST", "AccessControl/UserInfo/Search", json_body={
+                "UserInfoSearchCond": {"searchID": search_id, "searchResultPosition": 0, "maxResults": 100},
+            })
+            if not (200 <= res.status_code < 300):
+                raise FaceProvisioningError(f"falha ao listar usuários de {self.terminal.host} ({res.status_code}): {res.text}")
+            try:
+                body = res.json()
+            except ValueError:
+                raise FaceProvisioningError(f"resposta não-JSON de UserInfo/Search em {self.terminal.host}: {res.text}")
+            root = (body.get("UserInfoSearch") if isinstance(body, dict) else None) or {}
+            items = root.get("UserInfo") or []
+            employee_nos = [item.get("employeeNo") for item in items if item.get("employeeNo")]
+            if not employee_nos:
+                return removed
+
+            del_body = {"UserInfoDelCond": {"EmployeeNoList": [{"employeeNo": e} for e in employee_nos]}}
+            del_res = self.request("PUT", "AccessControl/UserInfo/Delete", json_body=del_body)
+            if not (200 <= del_res.status_code < 300):
+                raise FaceProvisioningError(f"falha ao apagar lote de usuários de {self.terminal.host} ({del_res.status_code}): {del_res.text}")
+            removed += len(employee_nos)
+        raise FaceProvisioningError(
+            f"clear_all_users em {self.terminal.host} não terminou após {_MAX_CLEAR_ALL_BATCHES} lotes "
+            f"({removed} removidos até aqui) — abortado por segurança, pode ser um bug no device"
+        )
 
     # --- cartão ---
     # Recurso separado do UserInfo (diferente da face, que vive dentro do próprio

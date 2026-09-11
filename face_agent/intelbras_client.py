@@ -167,6 +167,14 @@ class IntelbrasClient:
         if res.get("retcode") != 0:
             raise FaceProvisioningError(f"falha ao apagar usuário {employee_no}: {res.get('message')}")
 
+    def clear_all_users(self) -> None:
+        """Apaga TODOS os usuários (face + cartão) do terminal — zera o device inteiro.
+        Endpoint dedicado, documentado oficialmente (api/user/clear). Destrutivo e
+        irreversível no hardware — quem chama é responsável por confirmar antes."""
+        res = self.call("user", "clear")
+        if res.get("retcode") != 0:
+            raise FaceProvisioningError(f"falha ao limpar usuários de {self.terminal.host}: {res.get('message')}")
+
     # --- porta / reboot ---
 
     def open_door(self) -> dict:

@@ -145,6 +145,15 @@ class IntelbrasBioTClient:
         if not _ok(res):
             raise FaceProvisioningError(f"falha ao apagar usuário {employee_no} de {self.terminal.host}: {res.text.strip()!r}")
 
+    def clear_all_users(self) -> None:
+        """Apaga TODOS os usuários e credenciais associadas (face, cartão) do terminal —
+        zera o device inteiro. Endpoint dedicado (recordUpdater.cgi, não AccessUser.cgi),
+        documentado oficialmente. Destrutivo e irreversível no hardware — quem chama é
+        responsável por confirmar antes."""
+        res = self._get("recordUpdater.cgi", {"action": "clear", "name": "AccessControlCard"})
+        if not _ok(res):
+            raise FaceProvisioningError(f"falha ao limpar usuários de {self.terminal.host}: {res.text.strip()!r}")
+
     # --- cartão ---
     # Recurso separado do usuário (AccessCard.cgi, não AccessUser.cgi) — cadastrar/remover
     # cartão nunca toca a face já cadastrada e vice-versa.

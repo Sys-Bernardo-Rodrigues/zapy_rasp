@@ -145,6 +145,20 @@ class IntelbrasClientTest(unittest.TestCase):
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["level"], 1)
 
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_clear_all_users(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 0, "action": "clear", "message": "OK"})
+        self._client().clear_all_users()
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["target"], "user")
+        self.assertEqual(sent["action"], "clear")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_clear_all_users_raises_on_error(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": -1, "message": "erro"})
+        with self.assertRaises(FaceProvisioningError):
+            self._client().clear_all_users()
+
 
 class IntelbrasBioTClientTest(unittest.TestCase):
     def _client(self, **kwargs):
@@ -226,6 +240,20 @@ class IntelbrasBioTClientTest(unittest.TestCase):
         sent = mock_get.call_args.kwargs["params"]
         self.assertEqual(sent["CardNoList[0]"], "AAABBB")
         self.assertNotIn("UserID", sent)
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_clear_all_users(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text="OK")
+        self._client().clear_all_users()
+        sent = mock_get.call_args.kwargs["params"]
+        self.assertEqual(sent["action"], "clear")
+        self.assertEqual(sent["name"], "AccessControlCard")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_clear_all_users_raises_on_error(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text="businessCommonErrorUnKnownError")
+        with self.assertRaises(FaceProvisioningError):
+            self._client().clear_all_users()
 
     @patch("face_agent.intelbras_biot_client.requests.get")
     def test_fetch_access_records_parses_indexed_fields(self, mock_get):
@@ -357,6 +385,41 @@ class HikvisionClientTest(unittest.TestCase):
         self._client().delete_card("123")
         _, kwargs = mock_request.call_args
         self.assertEqual(kwargs["json"]["CardInfoDelCond"]["EmployeeNoList"], [{"employeeNo": "123"}])
+
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_clear_all_users_deletes_in_batches_until_empty(self, mock_request):
+        mock_request.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"UserInfoSearch": {
+                "UserInfo": [{"employeeNo": "1"}, {"employeeNo": "2"}], "responseStatusStrg": "OK",
+            }}),
+            MagicMock(status_code=200),  # delete do lote
+            MagicMock(status_code=200, json=lambda: {"UserInfoSearch": {"UserInfo": [], "responseStatusStrg": "NO_MATCHES"}}),
+        ]
+        removed = self._client().clear_all_users()
+        self.assertEqual(removed, 2)
+        self.assertEqual(mock_request.call_count, 3)
+        delete_call = mock_request.call_args_list[1]
+        self.assertEqual(
+            delete_call.kwargs["json"]["UserInfoDelCond"]["EmployeeNoList"],
+            [{"employeeNo": "1"}, {"employeeNo": "2"}],
+        )
+
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_clear_all_users_raises_on_search_failure(self, mock_request):
+        mock_request.return_value = MagicMock(status_code=500, text="erro")
+        with self.assertRaises(FaceProvisioningError):
+            self._client().clear_all_users()
+
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_clear_all_users_aborts_if_never_empties(self, mock_request):
+        # device com bug: search sempre devolve o mesmo usuário mesmo após apagar.
+        mock_request.side_effect = lambda *a, **k: (
+            MagicMock(status_code=200, json=lambda: {"UserInfoSearch": {"UserInfo": [{"employeeNo": "1"}], "responseStatusStrg": "OK"}})
+            if k.get("json", {}).get("UserInfoSearchCond")
+            else MagicMock(status_code=200)
+        )
+        with self.assertRaises(FaceProvisioningError):
+            self._client().clear_all_users()
 
 
 class FaceClientFactoryTest(unittest.TestCase):

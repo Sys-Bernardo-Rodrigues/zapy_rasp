@@ -13,6 +13,7 @@ Uso:
   python -m face_agent.cli enroll-card --vendor hikvision --host 192.168.1.100 \\
       --user admin --password senha --employee-no 123 --name "Fulano" --card-no AAABBB
   python -m face_agent.cli revoke-card --vendor hikvision --host 192.168.1.100 --user admin --password senha --employee-no 123
+  python -m face_agent.cli clear-all --vendor intelbras_biot --host 192.168.1.101 --user admin --password senha
 """
 import argparse
 import logging
@@ -76,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_health = sub.add_parser("health", help="checa se o terminal está respondendo")
     _add_terminal_args(p_health)
 
+    p_clear = sub.add_parser("clear-all", help="apaga TODOS os usuários/faces/cartões do terminal — destrutivo e irreversível")
+    _add_terminal_args(p_clear)
+    p_clear.add_argument("--yes", action="store_true", help="pula a confirmação interativa (uso em script)")
+
     return parser
 
 
@@ -121,6 +126,22 @@ def main(argv: list[str] | None = None) -> int:
                 print("ERRO: health check não implementado para esse vendor")
                 return 1
             print(client.check_health())
+            return 0
+
+        if args.command == "clear-all":
+            if not args.yes:
+                answer = input(
+                    f"Isso vai apagar TODOS os usuários, faces e cartões do terminal "
+                    f"{args.vendor}@{args.host}. Não tem volta. Digite 'sim' para confirmar: "
+                )
+                if answer.strip().lower() != "sim":
+                    print("Cancelado.")
+                    return 1
+            result = client.clear_all_users()
+            if isinstance(result, int):
+                print(f"OK: {result} usuário(s) removido(s)")
+            else:
+                print("OK: terminal zerado")
             return 0
     except Exception as e:
         print(f"ERRO: {e}")
