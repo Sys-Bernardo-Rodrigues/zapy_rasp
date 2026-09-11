@@ -12,7 +12,7 @@ Uso:
   python -m face_agent.cli health    --vendor intelbras --host 192.168.1.101 --user admin --password senha
   python -m face_agent.cli enroll-card --vendor hikvision --host 192.168.1.100 \\
       --user admin --password senha --employee-no 123 --name "Fulano" --card-no AAABBB
-  python -m face_agent.cli revoke-card --vendor hikvision --host 192.168.1.100 --user admin --password senha --employee-no 123
+  python -m face_agent.cli revoke-card --vendor hikvision --host 192.168.1.100 --user admin --password senha --employee-no 123 --card-no AAABBB
   python -m face_agent.cli clear-all --vendor intelbras_biot --host 192.168.1.101 --user admin --password senha
 """
 import argparse
@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_revoke_card = sub.add_parser("revoke-card", help="remove um cartão do terminal")
     _add_terminal_args(p_revoke_card)
     p_revoke_card.add_argument("--employee-no", required=True)
-    p_revoke_card.add_argument("--card-no", default=None, help="ignorado por alguns vendors (XPE/Hikvision removem por employee-no)")
+    p_revoke_card.add_argument("--card-no", required=True, help="código do cartão a remover (pessoa pode ter mais de um)")
 
     p_open = sub.add_parser("open-door", help="abre a porta/catraca remotamente (sem reconhecimento facial)")
     _add_terminal_args(p_open)

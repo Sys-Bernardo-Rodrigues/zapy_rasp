@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 MAX_JPEG_BYTES = 200 * 1024
 REQUEST_TIMEOUT_SECONDS = 10
 
+_CARD_CODE_SEP = ","  # CardCode guarda múltiplos cartões nesse formato: "AAABBB,00112233"
+
+
+def _split_card_codes(raw) -> list[str]:
+    if not raw:
+        return []
+    return [c for c in str(raw).split(_CARD_CODE_SEP) if c]
+
 
 @dataclass
 class IntelbrasTerminal:
@@ -101,11 +109,14 @@ class IntelbrasClient:
                 return item
         return None
 
-    def _upsert_credential(self, employee_no: str, name: str, credential: dict) -> str:
-        """Cria (ou atualiza) o usuário aplicando `credential` (ex.: {"FaceImage": ...} ou
-        {"CardCode": ...}) por cima do que já existe no device — preserva qualquer outra
-        credencial já cadastrada (user/set não é patch parcial: omitir um campo existente
-        apaga ele, validado ao vivo em produção). Retorna 'created' ou 'updated'."""
+    def _upsert_credential(self, employee_no: str, name: str, build_credential) -> str:
+        """Cria (ou atualiza) o usuário aplicando o que `build_credential(existing)` devolver
+        (ex.: {"FaceImage": ...} ou {"CardCode": ...}) por cima do que já existe no device —
+        preserva qualquer outra credencial já cadastrada (user/set não é patch parcial:
+        omitir um campo existente apaga ele, validado ao vivo em produção). `existing` (o
+        usuário já buscado, ou None) é repassado pra quem monta a credencial poder decidir
+        com base no que já está lá (ex.: somar um cartão à lista) sem precisar buscar nem
+        mais uma vez. Retorna 'created' ou 'updated'."""
         existing = self._find_existing_user(employee_no)
         item = self._user_item(employee_no, name)
         if existing:
@@ -113,7 +124,7 @@ class IntelbrasClient:
                 value = existing.get(key)
                 if value not in (None, ""):
                     item[key] = value
-        item.update(credential)
+        item.update(build_credential(existing))
 
         if existing is None:
             add_res = self.call("user", "add", {"item": [item]})
@@ -137,28 +148,36 @@ class IntelbrasClient:
         cadastrado. Retorna 'created' ou 'updated'."""
         _validate_jpeg(jpeg)
         face_image = base64.b64encode(jpeg).decode("ascii")
-        return self._upsert_credential(employee_no, name, {"FaceImage": face_image})
+        return self._upsert_credential(employee_no, name, lambda existing: {"FaceImage": face_image})
 
     def enroll_card(self, employee_no: str, name: str, card_no: str) -> str:
-        """Cria (ou atualiza) o usuário com o cartão, preservando face já cadastrada.
-        card_no é tratado como opaco (formato hexadecimal por convenção do device). O
-        device aceita múltiplos cartões por pessoa via CardCode separado por vírgula, mas
-        essa camada só lida com um cartão por vez.
-        ponytail: suporte a múltiplos cartões por pessoa, se algum dia precisar."""
+        """Adiciona um cartão ao usuário, preservando face e outros cartões já cadastrados
+        — CardCode guarda múltiplos cartões por pessoa separados por vírgula (documentado
+        oficialmente: "AAABBB,00112233"). card_no é tratado como opaco (formato
+        hexadecimal por convenção do device). Idempotente: card_no já presente não duplica
+        na lista."""
         if not card_no:
             raise FaceProvisioningError("código do cartão vazio")
-        return self._upsert_credential(employee_no, name, {"CardCode": card_no})
 
-    def delete_card(self, employee_no: str, card_no: str | None = None) -> None:
-        """Remove só o cartão do usuário (mantém a face, se houver) — CardCode vazio some
-        o campo sem apagar o resto do cadastro. card_no não é usado (XPE não guarda
-        múltiplos cartões separados aqui, só o campo único) — mantido no parâmetro pela
-        interface comum com os outros dois vendors. Idempotente: usuário inexistente não
-        lança."""
+        def build(existing):
+            codes = _split_card_codes(existing.get("CardCode")) if existing else []
+            if card_no not in codes:
+                codes.append(card_no)
+            return {"CardCode": _CARD_CODE_SEP.join(codes)}
+
+        return self._upsert_credential(employee_no, name, build)
+
+    def delete_card(self, employee_no: str, card_no: str) -> None:
+        """Remove só um cartão específico do usuário (mantém a face e os outros cartões) —
+        reescreve CardCode sem o card_no informado. Idempotente: usuário ou cartão
+        inexistente não lança."""
         existing = self._find_existing_user(employee_no)
         if existing is None:
             return
-        self._upsert_credential(employee_no, existing.get("Name") or employee_no, {"CardCode": ""})
+        self._upsert_credential(
+            employee_no, existing.get("Name") or employee_no,
+            lambda e: {"CardCode": _CARD_CODE_SEP.join(c for c in _split_card_codes(e.get("CardCode")) if c != card_no)},
+        )
 
     def delete_user_info(self, employee_no: str) -> None:
         """UserID sozinho já basta pra apagar, sem precisar do ID interno. Remove a pessoa

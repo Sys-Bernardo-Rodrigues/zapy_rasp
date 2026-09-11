@@ -65,14 +65,15 @@ CREATE TABLE IF NOT EXISTS terminal_names (
 );
 -- Tabela separada da `roster` (não uma coluna nela): jpeg é NOT NULL lá, e cartão pode
 -- existir sem face cadastrada (e vice-versa) — mesma independência já modelada no ZAccess
--- (cardEnrollmentStatus separado de faceEnrollmentStatus).
+-- (cardEnrollmentStatus separado de faceEnrollmentStatus). PK inclui card_no (não só
+-- terminal_id+employee_no) — uma pessoa pode ter mais de um cartão.
 CREATE TABLE IF NOT EXISTS card_roster (
     terminal_id TEXT NOT NULL,
     employee_no TEXT NOT NULL,
     name TEXT NOT NULL,
     card_no TEXT NOT NULL,
     enrolled INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (terminal_id, employee_no)
+    PRIMARY KEY (terminal_id, employee_no, card_no)
 );
 """
 
@@ -83,6 +84,17 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: s
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
+def _ensure_card_roster_schema(conn: sqlite3.Connection) -> None:
+    """Migração: card_roster mudou a PK de (terminal_id, employee_no) pra (terminal_id,
+    employee_no, card_no), pra uma pessoa poder ter mais de um cartão — `CREATE TABLE IF
+    NOT EXISTS` não altera a PK de uma tabela já existente com o formato antigo. Tabela é
+    só um cache de resync (a fonte de verdade é o ZAccess), então dropar e recriar é
+    seguro — só perde o cache até o próximo card:enroll."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='card_roster'").fetchone()
+    if row and row[0] and "PRIMARY KEY (terminal_id, employee_no, card_no)" not in row[0]:
+        conn.execute("DROP TABLE card_roster")
 
 
 @dataclass
@@ -134,6 +146,7 @@ class LocalStore:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
+        _ensure_card_roster_schema(self._conn)
         self._conn.executescript(_SCHEMA)
         _ensure_column(self._conn, "events", "picture", "BLOB")
         _ensure_column(self._conn, "events", "device_name", "TEXT")
@@ -211,27 +224,29 @@ class LocalStore:
     # schema) ---
 
     def upsert_card_roster(self, terminal_id: str, employee_no: str, name: str, card_no: str) -> None:
+        """card_no faz parte da chave (não só terminal_id+employee_no) — uma pessoa pode
+        ter mais de um cartão, cada upsert mexe só na linha do cartão específico."""
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO card_roster (terminal_id, employee_no, name, card_no, enrolled)
                 VALUES (?, ?, ?, ?, 0)
-                ON CONFLICT(terminal_id, employee_no) DO UPDATE SET
-                    name = excluded.name, card_no = excluded.card_no
+                ON CONFLICT(terminal_id, employee_no, card_no) DO UPDATE SET name = excluded.name
                 """,
                 (terminal_id, employee_no, name, card_no),
             )
             self._conn.commit()
 
-    def set_card_enrolled(self, terminal_id: str, employee_no: str, enrolled: bool) -> None:
+    def set_card_enrolled(self, terminal_id: str, employee_no: str, card_no: str, enrolled: bool) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE card_roster SET enrolled = ? WHERE terminal_id = ? AND employee_no = ?",
-                (1 if enrolled else 0, terminal_id, employee_no),
+                "UPDATE card_roster SET enrolled = ? WHERE terminal_id = ? AND employee_no = ? AND card_no = ?",
+                (1 if enrolled else 0, terminal_id, employee_no, card_no),
             )
             self._conn.commit()
 
     def list_card_by_terminal(self, terminal_id: str) -> list[CardRosterEntry]:
+        """Pode retornar várias linhas pra um mesmo employee_no — um cartão por linha."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT terminal_id, employee_no, name, card_no, enrolled FROM card_roster WHERE terminal_id = ?",
@@ -242,10 +257,13 @@ class LocalStore:
             for r in rows
         ]
 
-    def remove_card_roster(self, terminal_id: str, employee_no: str) -> None:
+    def remove_card_roster(self, terminal_id: str, employee_no: str, card_no: str) -> None:
+        """Remove só o cartão específico — os outros cartões da mesma pessoa (se houver)
+        continuam no roster."""
         with self._lock:
             self._conn.execute(
-                "DELETE FROM card_roster WHERE terminal_id = ? AND employee_no = ?", (terminal_id, employee_no)
+                "DELETE FROM card_roster WHERE terminal_id = ? AND employee_no = ? AND card_no = ?",
+                (terminal_id, employee_no, card_no),
             )
             self._conn.commit()
 

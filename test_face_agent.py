@@ -106,6 +106,27 @@ class IntelbrasClientTest(unittest.TestCase):
         self.assertEqual(sent["data"]["item"][0]["FaceImage"], "existingb64")
         self.assertEqual(sent["data"]["item"][0]["CardCode"], "AAABBB")
 
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_enroll_card_appends_to_existing_cards(self, mock_post):
+        # Pessoa já tem o cartão AAABBB — cadastrar CCCDDD não pode sobrescrever, só somar.
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "AAABBB"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0}),
+        ]
+        self._client().enroll_card("123", "Fulano", "CCCDDD")
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "AAABBB,CCCDDD")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_enroll_card_idempotent_when_already_present(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "AAABBB"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0}),
+        ]
+        self._client().enroll_card("123", "Fulano", "AAABBB")
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "AAABBB")
+
     def test_enroll_card_rejects_empty(self):
         with self.assertRaises(FaceProvisioningError):
             self._client().enroll_card("123", "Fulano", "")
@@ -125,6 +146,16 @@ class IntelbrasClientTest(unittest.TestCase):
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["item"][0]["CardCode"], "")
         self.assertEqual(sent["data"]["item"][0]["FaceImage"], "existingb64")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_delete_card_keeps_other_cards(self, mock_post):
+        existing_response = MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
+            {"ID": 7, "UserID": "123", "Name": "Fulano", "CardCode": "AAABBB,CCCDDD"},
+        ]}})
+        mock_post.side_effect = [existing_response, existing_response, MagicMock(status_code=200, json=lambda: {"retcode": 0})]
+        self._client().delete_card("123", "AAABBB")
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "CCCDDD")
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_delete_card_noop_when_user_missing(self, mock_post):
@@ -382,11 +413,17 @@ class HikvisionClientTest(unittest.TestCase):
             self._client().enroll_card("123", "Fulano", "")
 
     @patch("face_agent.hikvision_client.requests.request")
-    def test_delete_card_uses_employee_no(self, mock_request):
+    def test_delete_card_uses_cardno_not_employee_no(self, mock_request):
+        # Deletar por employeeNo apagaria TODOS os cartões da pessoa — bug corrigido, uma
+        # pessoa pode ter mais de um cartão.
         mock_request.return_value = MagicMock(status_code=200)
-        self._client().delete_card("123")
+        self._client().delete_card("123", "AAABBB")
         _, kwargs = mock_request.call_args
-        self.assertEqual(kwargs["json"]["CardInfoDelCond"]["EmployeeNoList"], [{"employeeNo": "123"}])
+        self.assertEqual(kwargs["json"]["CardInfoDelCond"], {"CardNoList": [{"cardNo": "AAABBB"}]})
+
+    def test_delete_card_rejects_empty(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().delete_card("123", "")
 
     @patch("face_agent.hikvision_client.requests.request")
     def test_clear_all_users_deletes_in_batches_until_empty(self, mock_request):
@@ -522,17 +559,28 @@ class LocalStoreTest(unittest.TestCase):
         self.assertEqual(entries[0].card_no, "AAABBB")
         self.assertFalse(entries[0].enrolled)
 
-        self.store.set_card_enrolled("t1", "123", True)
+        self.store.set_card_enrolled("t1", "123", "AAABBB", True)
         self.assertTrue(self.store.list_card_by_terminal("t1")[0].enrolled)
 
-        # upsert de novo não duplica, só atualiza
-        self.store.upsert_card_roster("t1", "123", "Fulano Silva", "CCCDDD")
+        # upsert do MESMO card_no não duplica, só atualiza o nome
+        self.store.upsert_card_roster("t1", "123", "Fulano Silva", "AAABBB")
         entries = self.store.list_card_by_terminal("t1")
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].card_no, "CCCDDD")
+        self.assertEqual(entries[0].name, "Fulano Silva")
 
-        self.store.remove_card_roster("t1", "123")
+        self.store.remove_card_roster("t1", "123", "AAABBB")
         self.assertEqual(self.store.list_card_by_terminal("t1"), [])
+
+    def test_card_roster_supports_multiple_cards_per_person(self):
+        self.store.upsert_card_roster("t1", "123", "Fulano", "AAABBB")
+        self.store.upsert_card_roster("t1", "123", "Fulano", "CCCDDD")
+        entries = sorted(self.store.list_card_by_terminal("t1"), key=lambda e: e.card_no)
+        self.assertEqual([e.card_no for e in entries], ["AAABBB", "CCCDDD"])
+
+        # remove só um cartão, o outro continua
+        self.store.remove_card_roster("t1", "123", "AAABBB")
+        entries = self.store.list_card_by_terminal("t1")
+        self.assertEqual([e.card_no for e in entries], ["CCCDDD"])
 
     def test_cursor_get_set_roundtrip(self):
         self.assertIsNone(self.store.get_cursor("t1"))
