@@ -48,17 +48,89 @@ class IntelbrasClientTest(unittest.TestCase):
     @patch("face_agent.intelbras_client.requests.post")
     def test_enroll_update_when_already_exists(self, mock_post):
         mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123"}]}}),  # get: já existe
+            MagicMock(status_code=200, json=lambda: {"retcode": 0}),  # set
+        ]
+        status = self._client().enroll_face("123", "Fulano", JPEG)
+        self.assertEqual(status, "updated")
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_enroll_update_preserves_existing_card(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "AAABBB"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0}),
+        ]
+        self._client().enroll_face("123", "Fulano", JPEG)
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "AAABBB")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_enroll_falls_back_to_set_when_add_races(self, mock_post):
+        # get inicial não acha ninguém, mas o add falha com "já existe" (outra chamada
+        # criou o usuário nesse meio-tempo) — cai pro get+set.
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": []}}),
             MagicMock(status_code=200, json=lambda: {"retcode": -1, "message": "User already exist"}),
-            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 9, "UserID": "123"}]}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0}),
         ]
         status = self._client().enroll_face("123", "Fulano", JPEG)
         self.assertEqual(status, "updated")
-        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_post.call_count, 4)
 
     def test_enroll_rejects_invalid_jpeg(self):
         with self.assertRaises(FaceProvisioningError):
             self._client().enroll_face("123", "Fulano", b"not a jpeg")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_enroll_card_create(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": []}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "action": "add", "message": "OK"}),
+        ]
+        status = self._client().enroll_card("123", "Fulano", "AAABBB")
+        self.assertEqual(status, "created")
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "AAABBB")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_enroll_card_preserves_existing_face(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "FaceImage": "existingb64"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0}),
+        ]
+        status = self._client().enroll_card("123", "Fulano", "AAABBB")
+        self.assertEqual(status, "updated")
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["FaceImage"], "existingb64")
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "AAABBB")
+
+    def test_enroll_card_rejects_empty(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_card("123", "Fulano", "")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_delete_card_clears_field_keeps_face(self, mock_post):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
+                {"ID": 7, "UserID": "123", "Name": "Fulano", "FaceImage": "existingb64", "CardCode": "AAABBB"},
+            ]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
+                {"ID": 7, "UserID": "123", "Name": "Fulano", "FaceImage": "existingb64", "CardCode": "AAABBB"},
+            ]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0}),
+        ]
+        self._client().delete_card("123", "AAABBB")
+        sent = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "")
+        self.assertEqual(sent["data"]["item"][0]["FaceImage"], "existingb64")
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_delete_card_noop_when_user_missing(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": []}})
+        self._client().delete_card("999", "AAABBB")  # não deve lançar
+        self.assertEqual(mock_post.call_count, 1)
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_open_door_never_raises(self, mock_post):
@@ -130,6 +202,30 @@ class IntelbrasBioTClientTest(unittest.TestCase):
         mock_get.return_value = MagicMock(status_code=200, text="accessControlErrorRelevantUserNotFound")
         with self.assertRaises(FaceProvisioningError):
             self._client().delete_user_info("123")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    @patch("face_agent.intelbras_biot_client.requests.post")
+    def test_enroll_card_create(self, mock_post, mock_get):
+        mock_post.side_effect = [
+            MagicMock(status_code=200, text="OK"),  # AccessUser insertMulti
+            MagicMock(status_code=200, text="OK"),  # AccessCard insertMulti
+        ]
+        status = self._client().enroll_card("123", "Fulano", "AAABBB")
+        self.assertEqual(status, "created")
+        card_call = mock_post.call_args_list[1]
+        self.assertEqual(card_call.kwargs["json"]["CardList"][0]["CardNo"], "AAABBB")
+
+    def test_enroll_card_rejects_empty(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_card("123", "Fulano", "")
+
+    @patch("face_agent.intelbras_biot_client.requests.get")
+    def test_delete_card_uses_cardno_not_userid(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, text="OK")
+        self._client().delete_card("123", "AAABBB")
+        sent = mock_get.call_args.kwargs["params"]
+        self.assertEqual(sent["CardNoList[0]"], "AAABBB")
+        self.assertNotIn("UserID", sent)
 
     @patch("face_agent.intelbras_biot_client.requests.get")
     def test_fetch_access_records_parses_indexed_fields(self, mock_get):
@@ -238,6 +334,29 @@ class HikvisionClientTest(unittest.TestCase):
         mock_request.return_value = response
         info = self._client().check_health()
         self.assertEqual(info, {"model": "DS-K1T671MF-L", "deviceName": "Access Controller"})
+
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_enroll_card_create_flow(self, mock_request):
+        mock_request.side_effect = [
+            MagicMock(status_code=200),  # UserInfo/Record
+            MagicMock(status_code=200),  # CardInfo/Record
+        ]
+        status = self._client().enroll_card("123", "Fulano", "AAABBB")
+        self.assertEqual(status, "created")
+        self.assertEqual(mock_request.call_count, 2)
+        _, kwargs = mock_request.call_args
+        self.assertEqual(kwargs["json"]["CardInfo"]["cardNo"], "AAABBB")
+
+    def test_enroll_card_rejects_empty(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_card("123", "Fulano", "")
+
+    @patch("face_agent.hikvision_client.requests.request")
+    def test_delete_card_uses_employee_no(self, mock_request):
+        mock_request.return_value = MagicMock(status_code=200)
+        self._client().delete_card("123")
+        _, kwargs = mock_request.call_args
+        self.assertEqual(kwargs["json"]["CardInfoDelCond"]["EmployeeNoList"], [{"employeeNo": "123"}])
 
 
 class FaceClientFactoryTest(unittest.TestCase):

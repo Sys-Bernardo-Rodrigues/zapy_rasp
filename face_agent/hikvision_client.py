@@ -172,12 +172,44 @@ class HikvisionClient:
         raise FaceProvisioningError(f"falha ao enviar face ({res.status_code}): {res.text}")
 
     def delete_user_info(self, employee_no: str) -> None:
-        """Apaga o UserInfo inteiro (libera o FPID, remove a face associada junto) — único
-        caminho provado nesse firmware pra remover uma face."""
+        """Apaga o UserInfo inteiro (libera o FPID, remove a face e o cartão associados
+        junto) — único caminho provado nesse firmware pra remover uma face. Pra remover só
+        o cartão, mantendo a face, use delete_card."""
         body = {"UserInfoDelCond": {"EmployeeNoList": [{"employeeNo": employee_no}]}}
         res = self.request("PUT", "AccessControl/UserInfo/Delete", json_body=body)
         if not (200 <= res.status_code < 300):
             raise FaceProvisioningError(f"falha ao apagar UserInfo ({res.status_code}): {res.text}")
+
+    # --- cartão ---
+    # Recurso separado do UserInfo (diferente da face, que vive dentro do próprio
+    # UserInfo) — cadastrar/remover cartão nunca toca a face já cadastrada e vice-versa.
+    # Documentação pública: ISAPI "Manage Card Information"
+    # (https://tpp.hikvision.com/Wiki/ISAPI/Access%20Control%20on%20Person) — não validado
+    # ao vivo ainda, diferente do resto deste client.
+
+    def enroll_card(self, employee_no: str, name: str, card_no: str) -> str:
+        """Cria (ou reaproveita) o UserInfo e vincula o cartão — chamável mesmo sem face
+        cadastrada ainda. employeeNo/cardNo não são editáveis depois de criados: pra trocar
+        o número, delete_card + enroll_card de novo."""
+        if not card_no:
+            raise FaceProvisioningError("código do cartão vazio")
+        status = self._upsert_user_info(employee_no, name)
+        body = {"CardInfo": {"employeeNo": employee_no, "cardNo": card_no}}
+        res = self.request("POST", "AccessControl/CardInfo/Record", json_body=body)
+        if not (200 <= res.status_code < 300):
+            raise FaceProvisioningError(f"falha ao cadastrar cartão de {employee_no} ({res.status_code}): {res.text}")
+        return status
+
+    def delete_card(self, employee_no: str, card_no: str | None = None) -> None:
+        """Remove o cartão vinculado ao employeeNo (mantém a face, se houver) — a doc
+        documenta EmployeeNoList e CardNoList como mutuamente exclusivos no mesmo delete;
+        apagar por employeeNo evita ter que guardar o número do cartão só pra revogar
+        depois. card_no não é usado — mantido no parâmetro pela interface comum com os
+        outros dois vendors."""
+        body = {"CardInfoDelCond": {"EmployeeNoList": [{"employeeNo": employee_no}]}}
+        res = self.request("PUT", "AccessControl/CardInfo/Delete", json_body=body)
+        if not (200 <= res.status_code < 300):
+            raise FaceProvisioningError(f"falha ao apagar cartão de {employee_no} ({res.status_code}): {res.text}")
 
     # --- porta / reboot ---
 

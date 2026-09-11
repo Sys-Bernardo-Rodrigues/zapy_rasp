@@ -102,21 +102,26 @@ class IntelbrasBioTClient:
             "ValidFrom": UNRESTRICTED_VALID_FROM, "ValidTo": UNRESTRICTED_VALID_TO,
         }
 
+    def _ensure_user(self, employee_no: str, name: str) -> str:
+        """Cria o usuário se ainda não existir (ou atualiza os campos base se já existir)
+        — pré-condição documentada oficialmente tanto pra face quanto pra cartão: o
+        usuário precisa existir antes de vincular qualquer credencial. Retorna 'created'
+        ou 'updated'."""
+        insert_res = self._post("AccessUser.cgi", "insertMulti", {"UserList": [self._user_body(employee_no, name)]})
+        if _ok(insert_res):
+            return "created"
+        if "accessControlErrorUserAlreadyExist" in insert_res.text:
+            update_res = self._post("AccessUser.cgi", "updateMulti", {"UserList": [self._user_body(employee_no, name)]})
+            if not _ok(update_res):
+                raise FaceProvisioningError(f"falha ao atualizar usuário {employee_no} em {self.terminal.host}: {update_res.text.strip()!r}")
+            return "updated"
+        raise FaceProvisioningError(f"falha ao cadastrar usuário {employee_no} em {self.terminal.host}: {insert_res.text.strip()!r}")
+
     def enroll_face(self, employee_no: str, name: str, jpeg: bytes) -> str:
         """Cadastra (ou atualiza) usuário + face num terminal Bio-T. Retorna 'created' ou
         'updated'."""
         _validate_jpeg(jpeg)
-
-        insert_res = self._post("AccessUser.cgi", "insertMulti", {"UserList": [self._user_body(employee_no, name)]})
-        if _ok(insert_res):
-            status = "created"
-        elif "accessControlErrorUserAlreadyExist" in insert_res.text:
-            update_res = self._post("AccessUser.cgi", "updateMulti", {"UserList": [self._user_body(employee_no, name)]})
-            if not _ok(update_res):
-                raise FaceProvisioningError(f"falha ao atualizar usuário {employee_no} em {self.terminal.host}: {update_res.text.strip()!r}")
-            status = "updated"
-        else:
-            raise FaceProvisioningError(f"falha ao cadastrar usuário {employee_no} em {self.terminal.host}: {insert_res.text.strip()!r}")
+        status = self._ensure_user(employee_no, name)
 
         face_image = base64.b64encode(jpeg).decode("ascii")
         face_body = {"FaceList": [{"UserID": employee_no, "PhotoData": [face_image]}]}
@@ -133,11 +138,37 @@ class IntelbrasBioTClient:
         raise FaceProvisioningError(f"falha ao enviar face de {employee_no} para {self.terminal.host}: {face_res.text.strip()!r}")
 
     def delete_user_info(self, employee_no: str) -> None:
-        """removeMulti já apaga as credenciais associadas (face inclusa), sem precisar
-        remover cada uma à parte — documentado explicitamente na doc oficial."""
+        """removeMulti já apaga as credenciais associadas (face e cartão inclusos), sem
+        precisar remover cada uma à parte — documentado explicitamente na doc oficial. Pra
+        remover só o cartão, mantendo a face, use delete_card."""
         res = self._get("AccessUser.cgi", {"action": "removeMulti", "UserIDList[0]": employee_no})
         if not _ok(res):
             raise FaceProvisioningError(f"falha ao apagar usuário {employee_no} de {self.terminal.host}: {res.text.strip()!r}")
+
+    # --- cartão ---
+    # Recurso separado do usuário (AccessCard.cgi, não AccessUser.cgi) — cadastrar/remover
+    # cartão nunca toca a face já cadastrada e vice-versa.
+
+    def enroll_card(self, employee_no: str, name: str, card_no: str) -> str:
+        """Cria (ou reaproveita) o usuário e vincula o cartão — pré-condição documentada
+        oficialmente: usuário já tem que existir. Cartão não é atualizável in-place (doc
+        oficial: pra trocar o número, remover e cadastrar de novo) — aqui só insere."""
+        if not card_no:
+            raise FaceProvisioningError("código do cartão vazio")
+        status = self._ensure_user(employee_no, name)
+        card_body = {"CardList": [{"UserID": employee_no, "CardNo": card_no, "CardType": 0, "CardStatus": 0}]}
+        card_res = self._post("AccessCard.cgi", "insertMulti", card_body)
+        if not _ok(card_res):
+            raise FaceProvisioningError(f"falha ao cadastrar cartão de {employee_no} em {self.terminal.host}: {card_res.text.strip()!r}")
+        return status
+
+    def delete_card(self, employee_no: str, card_no: str) -> None:
+        """Remove o cartão pelo número — AccessCard.cgi?action=removeMulti não aceita
+        UserID, só CardNo. employee_no não é usado — mantido no parâmetro pela interface
+        comum com os outros dois vendors."""
+        res = self._get("AccessCard.cgi", {"action": "removeMulti", "CardNoList[0]": card_no})
+        if not _ok(res):
+            raise FaceProvisioningError(f"falha ao remover cartão {card_no} de {self.terminal.host}: {res.text.strip()!r}")
 
     # --- porta / reboot ---
 

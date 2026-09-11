@@ -408,6 +408,65 @@ def run_zaccess_client(
 
             threading.Thread(target=run, daemon=True).start()
 
+        @sio.on("card:enroll", namespace=NAMESPACE)
+        def card_enroll(data):
+            """Servidor pede pra vincular um cartão a um terminal facial. Mesmo padrão do
+            face:enroll — roda em thread separada, mesmo formato de ack (face:enroll-ack),
+            pra reaproveitar o mesmo listener no servidor/painel."""
+            person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
+            terminal_id = str(data.get("terminalId") or "")
+            name = data.get("name") or employee_no
+            card_no = data.get("cardNo")
+            if not person_id or not terminal_id or not card_no:
+                logger.warning("ZAccess: card:enroll inválido - %s", data)
+                return
+
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: card:enroll pra terminal desconhecido %s", terminal_id)
+                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                return
+
+            def run():
+                try:
+                    client.enroll_card(employee_no, name, card_no)
+                    logger.info("ZAccess: cartão de %s cadastrado no terminal %s", name, terminal_id)
+                    _emit_enroll_ack(person_id, terminal_id, "card-enrolled")
+                except Exception as e:
+                    logger.error("ZAccess: falha ao cadastrar cartão de %s no terminal %s - %s", name, terminal_id, e)
+                    _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("card:revoke", namespace=NAMESPACE)
+        def card_revoke(data):
+            """Servidor pede pra remover um cartão de um terminal facial."""
+            person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
+            terminal_id = str(data.get("terminalId") or "")
+            card_no = data.get("cardNo")
+            if not person_id or not terminal_id:
+                logger.warning("ZAccess: card:revoke inválido - %s", data)
+                return
+
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: card:revoke pra terminal desconhecido %s", terminal_id)
+                _emit_enroll_ack(person_id, terminal_id, "failed", "terminal não configurado neste zapy")
+                return
+
+            def run():
+                try:
+                    client.delete_card(employee_no, card_no)
+                    logger.info("ZAccess: cartão de %s removido do terminal %s", employee_no, terminal_id)
+                    _emit_enroll_ack(person_id, terminal_id, "card-revoked")
+                except Exception as e:
+                    logger.error("ZAccess: falha ao remover cartão de %s do terminal %s - %s", employee_no, terminal_id, e)
+                    _emit_enroll_ack(person_id, terminal_id, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
         @sio.on("face:open-door", namespace=NAMESPACE)
         def face_open_door(data):
             """Servidor pede abertura remota da porta vinculada a um terminal facial —

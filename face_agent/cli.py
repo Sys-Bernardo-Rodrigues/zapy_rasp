@@ -10,6 +10,9 @@ Uso:
   python -m face_agent.cli open-door --vendor hikvision --host 192.168.1.100 --user admin --password senha
   python -m face_agent.cli reboot    --vendor intelbras --host 192.168.1.101 --user admin --password senha
   python -m face_agent.cli health    --vendor intelbras --host 192.168.1.101 --user admin --password senha
+  python -m face_agent.cli enroll-card --vendor hikvision --host 192.168.1.100 \\
+      --user admin --password senha --employee-no 123 --name "Fulano" --card-no AAABBB
+  python -m face_agent.cli revoke-card --vendor hikvision --host 192.168.1.100 --user admin --password senha --employee-no 123
 """
 import argparse
 import logging
@@ -53,6 +56,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_terminal_args(p_revoke)
     p_revoke.add_argument("--employee-no", required=True)
 
+    p_enroll_card = sub.add_parser("enroll-card", help="cadastra/atualiza um cartão no terminal")
+    _add_terminal_args(p_enroll_card)
+    p_enroll_card.add_argument("--employee-no", required=True, help="chave externa estável da pessoa")
+    p_enroll_card.add_argument("--name", required=True)
+    p_enroll_card.add_argument("--card-no", required=True, help="código do cartão (hexadecimal)")
+
+    p_revoke_card = sub.add_parser("revoke-card", help="remove um cartão do terminal")
+    _add_terminal_args(p_revoke_card)
+    p_revoke_card.add_argument("--employee-no", required=True)
+    p_revoke_card.add_argument("--card-no", default=None, help="ignorado por alguns vendors (XPE/Hikvision removem por employee-no)")
+
     p_open = sub.add_parser("open-door", help="abre a porta/catraca remotamente (sem reconhecimento facial)")
     _add_terminal_args(p_open)
 
@@ -80,6 +94,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "revoke":
             client.delete_user_info(args.employee_no)
             print("OK: removido")
+            return 0
+
+        if args.command == "enroll-card":
+            status = client.enroll_card(args.employee_no, args.name, args.card_no)
+            print(f"OK: {status}")
+            return 0
+
+        if args.command == "revoke-card":
+            client.delete_card(args.employee_no, args.card_no)
+            print("OK: cartão removido")
             return 0
 
         if args.command == "open-door":
