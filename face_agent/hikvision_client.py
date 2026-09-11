@@ -228,17 +228,21 @@ class HikvisionClient:
     # Recurso separado do UserInfo (diferente da face, que vive dentro do próprio
     # UserInfo) — cadastrar/remover cartão nunca toca a face já cadastrada e vice-versa.
     # Documentação pública: ISAPI "Manage Card Information"
-    # (https://tpp.hikvision.com/Wiki/ISAPI/Access%20Control%20on%20Person) — não validado
-    # ao vivo ainda, diferente do resto deste client.
+    # (https://tpp.hikvision.com/Wiki/ISAPI/Access%20Control%20on%20Person). enroll_card
+    # VALIDADO AO VIVO (envelope da requisição aceito pelo device, ver nota do cardType);
+    # delete_card ainda não.
 
     def enroll_card(self, employee_no: str, name: str, card_no: str) -> str:
         """Cria (ou reaproveita) o UserInfo e vincula o cartão — chamável mesmo sem face
         cadastrada ainda. employeeNo/cardNo não são editáveis depois de criados: pra trocar
-        o número, delete_card + enroll_card de novo."""
+        o número, delete_card + enroll_card de novo.
+        VALIDADO AO VIVO contra um device real: `cardType` é obrigatório nesse firmware
+        (erro "MessageParametersLack"/"cardType" sem ele), apesar da doc pública mostrar
+        um "Basic Message" sem esse campo — sempre manda "normalCard"."""
         if not card_no:
             raise FaceProvisioningError("código do cartão vazio")
         status = self._upsert_user_info(employee_no, name)
-        body = {"CardInfo": {"employeeNo": employee_no, "cardNo": card_no}}
+        body = {"CardInfo": {"employeeNo": employee_no, "cardNo": card_no, "cardType": "normalCard"}}
         res = self.request("POST", "AccessControl/CardInfo/Record", json_body=body)
         if not (200 <= res.status_code < 300):
             raise FaceProvisioningError(f"falha ao cadastrar cartão de {employee_no} ({res.status_code}): {res.text}")

@@ -14,6 +14,7 @@ import socketio
 
 from face_agent import (
     EventsPoller,
+    FaceProvisioningError,
     LocalStore,
     create_face_client,
     enforce_schedule,
@@ -446,6 +447,10 @@ def run_zaccess_client(
             def run():
                 try:
                     client.enroll_card(employee_no, name, card_no)
+                    # Guarda no roster local de cartão pra clear-all/resync poder
+                    # reaplicar sozinho depois, mesmo racional do roster de face.
+                    local_store.upsert_card_roster(terminal_id, employee_no, name, card_no)
+                    local_store.set_card_enrolled(terminal_id, employee_no, True)
                     logger.info("ZAccess: cartão de %s cadastrado no terminal %s", name, terminal_id)
                     _emit_card_ack(person_id, terminal_id, "enrolled")
                 except Exception as e:
@@ -474,11 +479,77 @@ def run_zaccess_client(
             def run():
                 try:
                     client.delete_card(employee_no, card_no)
+                    local_store.remove_card_roster(terminal_id, employee_no)
                     logger.info("ZAccess: cartão de %s removido do terminal %s", employee_no, terminal_id)
                     _emit_card_ack(person_id, terminal_id, "revoked")
                 except Exception as e:
                     logger.error("ZAccess: falha ao remover cartão de %s do terminal %s - %s", employee_no, terminal_id, e)
                     _emit_card_ack(person_id, terminal_id, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        def _clear_and_resync_terminal(terminal_id: str, client) -> dict:
+            """Zera o terminal (clear_all_users) e ressincroniza a partir do roster local
+            (face + cartão) — devolve o device ao estado que o ZAccess já espera, sem
+            precisar reenviar foto/cartão de cada pessoa manualmente de novo. Cada entrada
+            falha isoladamente (uma pessoa com problema não trava o resto do resync)."""
+            if not hasattr(client, "clear_all_users"):
+                raise FaceProvisioningError("clear_all_users não implementado para esse vendor")
+            client.clear_all_users()
+
+            faces_ok = faces_failed = cards_ok = cards_failed = 0
+            for entry in local_store.list_by_terminal(terminal_id):
+                try:
+                    client.enroll_face(entry.employee_no, entry.name, entry.jpeg)
+                    faces_ok += 1
+                except Exception as e:
+                    logger.error("ZAccess: resync falhou pra face de %s no terminal %s - %s", entry.employee_no, terminal_id, e)
+                    faces_failed += 1
+            for entry in local_store.list_card_by_terminal(terminal_id):
+                try:
+                    client.enroll_card(entry.employee_no, entry.name, entry.card_no)
+                    cards_ok += 1
+                except Exception as e:
+                    logger.error("ZAccess: resync falhou pro cartão de %s no terminal %s - %s", entry.employee_no, terminal_id, e)
+                    cards_failed += 1
+            return {"facesResynced": faces_ok, "facesFailed": faces_failed, "cardsResynced": cards_ok, "cardsFailed": cards_failed}
+
+        def _emit_clear_all_ack(terminal_id: str, status: str, error: str | None = None, counts: dict | None = None):
+            try:
+                if sio.connected:
+                    payload = {"terminalId": terminal_id, "status": status}
+                    if error:
+                        payload["error"] = error
+                    if counts:
+                        payload.update(counts)
+                    sio.emit("face:clear-all-ack", payload, namespace=NAMESPACE)
+            except Exception:
+                pass
+
+        @sio.on("face:clear-all", namespace=NAMESPACE)
+        def face_clear_all(data):
+            """Servidor pede pra zerar um terminal e ressincronizar do roster local
+            (face + cartão) — ex.: terminal trocado/resetado em campo, ou saiu de
+            sincronia com o que o ZAccess acha que está cadastrado."""
+            terminal_id = str(data.get("terminalId") or "")
+            if not terminal_id:
+                logger.warning("ZAccess: face:clear-all inválido - %s", data)
+                return
+
+            client = face_clients.get(terminal_id)
+            if not client:
+                logger.error("ZAccess: face:clear-all pra terminal desconhecido %s", terminal_id)
+                threading.Thread(target=_emit_clear_all_ack, args=(terminal_id, "failed", "terminal não configurado neste zapy"), daemon=True).start()
+                return
+
+            def run():
+                try:
+                    counts = _clear_and_resync_terminal(terminal_id, client)
+                    logger.info("ZAccess: terminal %s zerado e ressincronizado -> %s", terminal_id, counts)
+                    _emit_clear_all_ack(terminal_id, "done", None, counts)
+                except Exception as e:
+                    logger.error("ZAccess: falha ao zerar/ressincronizar terminal %s - %s", terminal_id, e)
+                    _emit_clear_all_ack(terminal_id, "failed", str(e))
 
             threading.Thread(target=run, daemon=True).start()
 

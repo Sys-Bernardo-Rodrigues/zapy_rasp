@@ -374,6 +374,8 @@ class HikvisionClientTest(unittest.TestCase):
         self.assertEqual(mock_request.call_count, 2)
         _, kwargs = mock_request.call_args
         self.assertEqual(kwargs["json"]["CardInfo"]["cardNo"], "AAABBB")
+        # VALIDADO AO VIVO: sem cardType o device recusa com "MessageParametersLack"/"cardType".
+        self.assertEqual(kwargs["json"]["CardInfo"]["cardType"], "normalCard")
 
     def test_enroll_card_rejects_empty(self):
         with self.assertRaises(FaceProvisioningError):
@@ -512,6 +514,25 @@ class LocalStoreTest(unittest.TestCase):
 
         self.store.remove_roster("t1", "123")
         self.assertEqual(self.store.list_by_terminal("t1"), [])
+
+    def test_card_roster_upsert_list_set_enrolled_remove(self):
+        self.store.upsert_card_roster("t1", "123", "Fulano", "AAABBB")
+        entries = self.store.list_card_by_terminal("t1")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].card_no, "AAABBB")
+        self.assertFalse(entries[0].enrolled)
+
+        self.store.set_card_enrolled("t1", "123", True)
+        self.assertTrue(self.store.list_card_by_terminal("t1")[0].enrolled)
+
+        # upsert de novo não duplica, só atualiza
+        self.store.upsert_card_roster("t1", "123", "Fulano Silva", "CCCDDD")
+        entries = self.store.list_card_by_terminal("t1")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].card_no, "CCCDDD")
+
+        self.store.remove_card_roster("t1", "123")
+        self.assertEqual(self.store.list_card_by_terminal("t1"), [])
 
     def test_cursor_get_set_roundtrip(self):
         self.assertIsNone(self.store.get_cursor("t1"))

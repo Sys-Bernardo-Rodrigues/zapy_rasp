@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS terminal_names (
     terminal_id TEXT PRIMARY KEY,
     name TEXT NOT NULL
 );
+-- Tabela separada da `roster` (não uma coluna nela): jpeg é NOT NULL lá, e cartão pode
+-- existir sem face cadastrada (e vice-versa) — mesma independência já modelada no ZAccess
+-- (cardEnrollmentStatus separado de faceEnrollmentStatus).
+CREATE TABLE IF NOT EXISTS card_roster (
+    terminal_id TEXT NOT NULL,
+    employee_no TEXT NOT NULL,
+    name TEXT NOT NULL,
+    card_no TEXT NOT NULL,
+    enrolled INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (terminal_id, employee_no)
+);
 """
 
 
@@ -81,6 +92,15 @@ class RosterEntry:
     name: str
     jpeg: bytes
     access_schedule: Optional[dict]
+    enrolled: bool
+
+
+@dataclass
+class CardRosterEntry:
+    terminal_id: str
+    employee_no: str
+    name: str
+    card_no: str
     enrolled: bool
 
 
@@ -186,6 +206,48 @@ class LocalStore:
                 (terminal_id, employee_no),
             ).fetchone()
         return row[0] if row else None
+
+    # --- card_roster (mesma ideia da roster de face, tabela própria — ver comentário no
+    # schema) ---
+
+    def upsert_card_roster(self, terminal_id: str, employee_no: str, name: str, card_no: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO card_roster (terminal_id, employee_no, name, card_no, enrolled)
+                VALUES (?, ?, ?, ?, 0)
+                ON CONFLICT(terminal_id, employee_no) DO UPDATE SET
+                    name = excluded.name, card_no = excluded.card_no
+                """,
+                (terminal_id, employee_no, name, card_no),
+            )
+            self._conn.commit()
+
+    def set_card_enrolled(self, terminal_id: str, employee_no: str, enrolled: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE card_roster SET enrolled = ? WHERE terminal_id = ? AND employee_no = ?",
+                (1 if enrolled else 0, terminal_id, employee_no),
+            )
+            self._conn.commit()
+
+    def list_card_by_terminal(self, terminal_id: str) -> list[CardRosterEntry]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT terminal_id, employee_no, name, card_no, enrolled FROM card_roster WHERE terminal_id = ?",
+                (terminal_id,),
+            ).fetchall()
+        return [
+            CardRosterEntry(terminal_id=r[0], employee_no=r[1], name=r[2], card_no=r[3], enrolled=bool(r[4]))
+            for r in rows
+        ]
+
+    def remove_card_roster(self, terminal_id: str, employee_no: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM card_roster WHERE terminal_id = ? AND employee_no = ?", (terminal_id, employee_no)
+            )
+            self._conn.commit()
 
     # --- events (log local de auditoria — alimenta o painel "Eventos") ---
 
