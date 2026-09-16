@@ -12,6 +12,7 @@ XPE3200_IP_FACE_Http_API_de_Integração.pdf.
 import base64
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 
@@ -217,6 +218,57 @@ class IntelbrasClient:
             return {"ok": False, "reason": res.get("message") or f"retcode {res.get('retcode')}"}
         except Exception as e:
             return {"ok": False, "reason": str(e)}
+
+    def capture_snapshot(self) -> bytes | None:
+        """Tira uma foto AO VIVO da câmera (Api Snapshot, `target: snapshot, action: get`,
+        firmware >= 116.57.2.116, documentada no manual) — usado quando a porta é liberada
+        pelo cockpit/console, caso em que não existe evento de doorlog ainda pra puxar
+        Picture. Resposta vem em data URI base64 (`data:image/jpeg;base64,...`). Nunca
+        lança — quem chama trata None como 'sem foto disponível'."""
+        try:
+            res = self.call("snapshot", "get")
+        except FaceProvisioningError as e:
+            logger.warning("falha ao capturar snapshot (%s): %s", self.terminal.host, e)
+            return None
+        if res.get("retcode") != 0:
+            logger.warning("snapshot indisponível (%s): %s", self.terminal.host, res.get("message"))
+            return None
+        raw = ((res.get("data") or {}).get("snapshot") or "")
+        b64 = raw.split(",", 1)[1] if "," in raw else raw
+        if not b64:
+            return None
+        try:
+            return base64.b64decode(b64)
+        except (ValueError, TypeError) as e:
+            logger.warning("snapshot com base64 inválido (%s): %s", self.terminal.host, e)
+            return None
+
+    def fetch_picture(self, picture_ref: str) -> bytes | None:
+        """Baixa a foto de um evento do doorlog (campo `Picture`, presente inclusive pra
+        acesso negado/desconhecido — documentado no manual, seção "Eventos em tempo real").
+        O device embute scheme+host PRÓPRIO na URL (sempre https, ex.:
+        "https://10.101.1.121/Image/DoorPicture/foo.jpg") mesmo quando a HTTP API está
+        configurada em http puro — validado ao vivo: esse https do device usa um
+        certificado fraco que o Python recusa negociar (EE certificate key too weak).
+        Por isso descarta o scheme+host que o device manda e sempre refaz a URL em cima de
+        `_base_url()` (mesma config http/https/porta já validada pra chamar a API); se vier
+        só o nome do arquivo (sem path), monta em /Image/DoorPicture/<arquivo> (mesmo padrão
+        de /Image/RegisterImg documentado pro cadastro de face). Basic Auth, igual toda
+        chamada da API. Nunca lança — quem chama trata None como 'sem foto disponível'."""
+        path = urlparse(picture_ref).path if "://" in picture_ref else None
+        url = f"{self._base_url()}{path}" if path else f"{self._base_url()}/Image/DoorPicture/{picture_ref}"
+        try:
+            res = requests.get(
+                url, auth=(self.terminal.username, self.terminal.password),
+                verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as e:
+            logger.warning("falha ao baixar foto do evento (%s): %s", self.terminal.host, e)
+            return None
+        if 200 <= res.status_code < 300 and res.content:
+            return res.content
+        logger.warning("foto do evento indisponível (%s): HTTP %s", self.terminal.host, res.status_code)
+        return None
 
 
 def _validate_jpeg(jpeg: bytes) -> None:

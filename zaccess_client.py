@@ -173,8 +173,9 @@ def run_zaccess_client(
             saíram da config (ex.: terminal removido no painel). Hikvision usa AcsEvent;
             Intelbras XPE só tem doorlog; Intelbras Bio-T/SS usa recordFinder.cgi — três
             protocolos, mesma assimetria do plano de integração facial (seção 6.3),
-            refletida aqui na escolha da função de fetch por tipo de client. Hikvision e
-            Bio-T expõem URL de foto por evento (fetch_picture); XPE não."""
+            refletida aqui na escolha da função de fetch por tipo de client. Os três
+            expõem URL de foto por evento (fetch_picture) — Hikvision só em match
+            bem-sucedido (minor=75); Bio-T e XPE trazem foto até pra desconhecido."""
             for tid in list(event_pollers.keys()):
                 if tid not in face_clients:
                     _, stop_evt = event_pollers.pop(tid)
@@ -202,7 +203,14 @@ def run_zaccess_client(
                 else:
                     # Direção fixa "unknown": FaceTerminal ainda não tem esse campo no
                     # servidor (sem consumidor até schedule_enforcer/events_poller existirem).
-                    fetch = lambda cursor, c=client, t=tid: fetch_intelbras_events_since(c, t, "unknown", cursor)
+                    def fetch(cursor, c=client, t=tid):
+                        events, next_cursor = fetch_intelbras_events_since(c, t, "unknown", cursor)
+                        # Baixa a foto do doorlog (campo Picture, vem até pra desconhecido)
+                        # antes de devolver — assim já entra persistida no primeiro add_events.
+                        for event in events:
+                            url = event.get("picture_url")
+                            event["picture"] = c.fetch_picture(url) if url else None
+                        return events, next_cursor
                 poller = EventsPoller(local_store, tid, fetch)
                 thread, stop_evt = poller.start(_emit_face_identified, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
                 event_pollers[tid] = (thread, stop_evt)

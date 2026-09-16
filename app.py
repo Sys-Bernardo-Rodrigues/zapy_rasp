@@ -5,6 +5,7 @@ import logging
 import subprocess
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, render_template, redirect, url_for, request, jsonify, session, Response
@@ -427,6 +428,21 @@ def api_cockpit_face_terminal_open(terminal_id):
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
     result = client.open_door()  # nunca lança — {"ok": bool, "reason"?: str}
+    if result.get("ok"):
+        # Registra no log de Eventos igual um reconhecimento facial — sem isso a abertura
+        # pelo cockpit fica invisível no painel (não passa por reconhecimento, não gera
+        # AcsEvent/doorlog nenhum pra poller pegar). device_name fixo em vez de tentar
+        # inferir da resposta do device: aqui sempre foi o porteiro clicando, não tem
+        # ambiguidade a resolver como no doorlog do XPE.
+        now = datetime.now(timezone(timedelta(hours=-3)))
+        capture_snapshot = getattr(client, "capture_snapshot", None)
+        local_store.add_events([{
+            "dedupe_key": f"{terminal_id}:cockpit:{now.strftime('%Y%m%dT%H%M%S%f')}",
+            "terminal_id": terminal_id, "employee_no": None, "time": now.isoformat(),
+            "direction": "unknown", "success": True, "source": "cockpit",
+            "picture": capture_snapshot() if capture_snapshot else None,
+            "device_name": "Liberado pelo Cockpit",
+        }])
     return jsonify({"success": bool(result.get("ok")), "reason": result.get("reason")}), (200 if result.get("ok") else 502)
 
 

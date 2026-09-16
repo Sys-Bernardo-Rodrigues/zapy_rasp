@@ -272,19 +272,29 @@ def fetch_intelbras_events_since(client, terminal_id: str, direction: str, curso
 def _intelbras_doorlog_to_event(terminal_id: str, direction: str, item: dict) -> Optional[dict]:
     if not item.get("ID") or not item.get("Date") or not item.get("Time"):
         return None
-    success = item.get("Status") == "Success"
     # UserID vem como a string literal "Desconhecido" (não um employeeNo real) quando o
-    # reconhecimento falha — validado ao vivo contra XPE-3200-PLUS-IP.
+    # reconhecimento falha — validado ao vivo contra XPE-3200-PLUS-IP. Já uma abertura via
+    # API/relay (cockpit) não carrega UserID NENHUM (doc oficial: exemplo de doorlog com
+    # "Code":"OpenDoor","Name":"HTTPAPI","Type":"Cloud" não tem esse campo) — sem esse
+    # descarte, a mesma abertura virava dois eventos: o que a rota do cockpit já registra
+    # direto (com foto na hora e nome certo) + esse aqui sem nome nenhum ("-").
     user_id = item.get("UserID")
-    employee_no = user_id if success and user_id and user_id != "Desconhecido" else None
+    if not user_id:
+        return None
+    success = item.get("Status") == "Success"
+    employee_no = user_id if success and user_id != "Desconhecido" else None
     # Firmware não embute timezone no doorlog — fixo -03:00 (mesmo racional do z-edu:
     # só opera no Brasil por ora).
     time = f"{item['Date']}T{item['Time']}-03:00"
+    # "Picture" só existe em firmware >= 116.57.2.124 (documentado no manual) — vem em
+    # QUALQUER doorlog, inclusive acesso negado/desconhecido (exemplo oficial "Doorlog
+    # Usuário não cadastrado e acesso negado" já traz o campo preenchido).
+    picture_url = (item.get("Picture") or "").strip() or None
     return {
         "dedupe_key": f"{terminal_id}:doorlog:{item['ID']}", "terminal_id": terminal_id,
         "employee_no": employee_no, "time": time, "direction": direction,
         "major_event_type": None, "minor_event_type": None, "success": success,
-        "source": "poll", "raw": item,
+        "source": "poll", "picture_url": picture_url, "raw": item,
     }
 
 

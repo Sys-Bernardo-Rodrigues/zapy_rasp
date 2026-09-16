@@ -288,6 +288,27 @@ class HikvisionClient:
         except Exception as e:
             return {"ok": False, "reason": str(e)}
 
+    def capture_snapshot(self) -> bytes | None:
+        """Tira uma foto AO VIVO da câmera (não depende de AcsEvent) — usado quando a porta
+        é liberada pelo cockpit/console, caso em que não existe pictureURL nenhuma pra
+        baixar (não veio de um reconhecimento). Endpoint ISAPI padrão de streaming
+        (`/ISAPI/Streaming/channels/101/picture`, canal 1/stream principal), presente em
+        praticamente todo device Hikvision com câmera embutida. Validado ao vivo contra um
+        DS-K1T671MF-L real (abertura pelo cockpit)."""
+        try:
+            res = requests.get(
+                self._base_url() + "/ISAPI/Streaming/channels/101/picture",
+                auth=HTTPDigestAuth(self.terminal.username, self.terminal.password),
+                verify=self.terminal.verify_tls, timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as e:
+            logger.warning("falha ao capturar snapshot (%s): %s", self.terminal.host, e)
+            return None
+        if 200 <= res.status_code < 300 and res.content:
+            return res.content
+        logger.warning("snapshot indisponível (%s): HTTP %s", self.terminal.host, res.status_code)
+        return None
+
     def fetch_picture(self, picture_url: str) -> bytes | None:
         """Baixa a foto capturada num evento de reconhecimento (campo `pictureURL` de um
         AcsEvent minor=75) — URL completa servida pelo device fora do namespace /ISAPI/

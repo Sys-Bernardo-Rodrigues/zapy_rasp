@@ -3,6 +3,7 @@ Self-check do face_agent — sem terminal físico. Mocka `requests` pra validar 
 protocolo (envelope Intelbras, branches create/update, XML sem format=json no
 Hikvision, circuit breaker de auth). Rodar: python -m unittest test_face_agent -v
 """
+import base64
 import os
 import tempfile
 import unittest
@@ -176,6 +177,46 @@ class IntelbrasClientTest(unittest.TestCase):
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["level"], 1)
 
+    @patch("face_agent.intelbras_client.requests.get")
+    def test_fetch_picture_builds_url_from_bare_filename(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, content=JPEG)
+        result = self._client().fetch_picture("2026-01-01_10-00-00.jpg")
+        self.assertEqual(result, JPEG)
+        sent_url = mock_get.call_args.args[0]
+        self.assertEqual(sent_url, "http://10.0.0.1:80/Image/DoorPicture/2026-01-01_10-00-00.jpg")
+
+    @patch("face_agent.intelbras_client.requests.get")
+    def test_fetch_picture_discards_device_scheme_and_host(self, mock_get):
+        """O device sempre embute https no campo Picture (cert fraco, Python recusa) —
+        precisa ignorar o scheme+host que ele manda e usar a config da própria API (http)."""
+        mock_get.return_value = MagicMock(status_code=200, content=JPEG)
+        self._client().fetch_picture("https://10.101.1.121/Image/DoorPicture/foo.jpg")
+        sent_url = mock_get.call_args.args[0]
+        self.assertEqual(sent_url, "http://10.0.0.1:80/Image/DoorPicture/foo.jpg")
+
+    @patch("face_agent.intelbras_client.requests.get")
+    def test_fetch_picture_returns_none_on_network_error(self, mock_get):
+        mock_get.side_effect = requests.RequestException("boom")
+        self.assertIsNone(self._client().fetch_picture("foo.jpg"))
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_capture_snapshot_decodes_base64_data_uri(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {
+            "retcode": 0, "action": "get",
+            "data": {"snapshot": "data:image/jpeg;base64," + base64.b64encode(JPEG).decode("ascii")},
+        })
+        self.assertEqual(self._client().capture_snapshot(), JPEG)
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_capture_snapshot_returns_none_on_retcode_error(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 1, "message": "erro"})
+        self.assertIsNone(self._client().capture_snapshot())
+
+    @patch("face_agent.intelbras_client.requests.post")
+    def test_capture_snapshot_returns_none_on_network_error(self, mock_post):
+        mock_post.side_effect = requests.RequestException("boom")
+        self.assertIsNone(self._client().capture_snapshot())
+
     @patch("face_agent.intelbras_client.requests.post")
     def test_clear_all_users(self, mock_post):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 0, "action": "clear", "message": "OK"})
@@ -339,6 +380,23 @@ class HikvisionClientTest(unittest.TestCase):
     def test_fetch_picture_returns_none_on_network_error(self, mock_get):
         mock_get.side_effect = requests.RequestException("boom")
         self.assertIsNone(self._client().fetch_picture("http://10.0.0.2/LOCALS/pic/foo.jpeg@WEB1"))
+
+    @patch("face_agent.hikvision_client.requests.get")
+    def test_capture_snapshot_returns_bytes_on_success(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=200, content=JPEG)
+        self.assertEqual(self._client().capture_snapshot(), JPEG)
+        sent_url = mock_get.call_args.args[0]
+        self.assertEqual(sent_url, "http://10.0.0.2:80/ISAPI/Streaming/channels/101/picture")
+
+    @patch("face_agent.hikvision_client.requests.get")
+    def test_capture_snapshot_returns_none_on_http_error(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404, content=b"")
+        self.assertIsNone(self._client().capture_snapshot())
+
+    @patch("face_agent.hikvision_client.requests.get")
+    def test_capture_snapshot_returns_none_on_network_error(self, mock_get):
+        mock_get.side_effect = requests.RequestException("boom")
+        self.assertIsNone(self._client().capture_snapshot())
 
     @patch("face_agent.hikvision_client.requests.request")
     def test_json_request_adds_format_json(self, mock_request):
@@ -898,7 +956,7 @@ class IntelbrasEventsFetchTest(unittest.TestCase):
     def test_returns_only_new_items_and_maps_desconhecido_to_none(self):
         client = MagicMock()
         client.call.return_value = {"retcode": 0, "data": {"item": [
-            {"ID": "10", "Date": "2026-01-01", "Time": "10:00:00", "Status": "Success", "UserID": "123"},
+            {"ID": "10", "Date": "2026-01-01", "Time": "10:00:00", "Status": "Success", "UserID": "123", "Picture": "2026-01-01_10-00-00.jpg"},
             {"ID": "11", "Date": "2026-01-01", "Time": "10:05:00", "Status": "Fail", "UserID": "Desconhecido"},
         ]}}
 
@@ -908,6 +966,34 @@ class IntelbrasEventsFetchTest(unittest.TestCase):
         self.assertEqual(events[0]["employee_no"], "123")
         self.assertIsNone(events[1]["employee_no"])
         self.assertEqual(next_cursor.search_id, "11")
+
+    def test_picture_field_present_even_for_desconhecido(self):
+        """Doorlog manda `Picture` pra qualquer evento, inclusive acesso negado/desconhecido
+        (validado no manual oficial do XPE, seção "Eventos em tempo real") — sem esse campo
+        virando picture_url, o painel nunca mostrava foto de gente não cadastrada."""
+        client = MagicMock()
+        client.call.return_value = {"retcode": 0, "data": {"item": [
+            {"ID": "10", "Date": "2026-01-01", "Time": "10:00:00", "Status": "Fail", "UserID": "Desconhecido", "Picture": "2026-01-01_10-00-00.jpg"},
+        ]}}
+
+        events, _ = fetch_intelbras_events_since(client, "t1", "in", PollCursor(terminal_id="t1", search_id="9"))
+
+        self.assertEqual(events[0]["picture_url"], "2026-01-01_10-00-00.jpg")
+
+    def test_skips_doorlog_items_without_userid(self):
+        """Abertura via API/relay (cockpit) não carrega UserID (doc oficial: exemplo
+        Code=OpenDoor/Name=HTTPAPI/Type=Cloud não tem esse campo) — sem o skip, duplicava
+        com o evento que a rota do cockpit já registra direto."""
+        client = MagicMock()
+        client.call.return_value = {"retcode": 0, "data": {"item": [
+            {"ID": "10", "Date": "2026-01-01", "Time": "10:00:00", "Status": "Success", "Code": "OpenDoor", "Name": "HTTPAPI", "Type": "Cloud"},
+            {"ID": "11", "Date": "2026-01-01", "Time": "10:05:00", "Status": "Success", "UserID": "123"},
+        ]}}
+
+        events, _ = fetch_intelbras_events_since(client, "t1", "in", PollCursor(terminal_id="t1", search_id="9"))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["employee_no"], "123")
 
 
 class IntelbrasBioTEventsFetchTest(unittest.TestCase):
