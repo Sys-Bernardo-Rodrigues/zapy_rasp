@@ -7,6 +7,8 @@ Painel web local (Flask) para controle de 4 relés via GPIO no Raspberry Pi, com
 - Python 3.10+
 - Raspberry Pi (GPIO: pinos BCM 5, 6, 13, 19 para os canais 1–4)
 
+Também roda no **Windows/macOS/Linux sem GPIO real** (ex.: desenvolvimento, ou como cliente ZAccess puro): relés e sensores caem automaticamente em **modo mock** (sem controle físico), o painel e a integração com o ZAccess funcionam normalmente.
+
 ## Instalação
 
 ### Instalação completa (recomendado no Raspberry Pi)
@@ -59,6 +61,29 @@ source .venv/bin/activate   # Linux/macOS
 pip install -r requirements.txt
 ```
 
+### Instalação completa no Windows (sem GPIO real)
+
+Instala ambiente virtual, dependências e registra o Zapy como **tarefa agendada** (inicia com o Windows, sem precisar de login), no mesmo padrão do agente local do projeto-z-edu:
+
+```powershell
+.\scripts\install-windows.ps1
+```
+
+Rode num **PowerShell como Administrador**. `lgpio` (linha do `requirements.txt` para GPIO real) só é instalado no Linux; no Windows os relés e sensores caem em modo mock automaticamente (`GPIOZERO_PIN_FACTORY=mock`, adicionado ao `.env` pelo instalador).
+
+- **Status/logs:** Agendador de Tarefas (`taskschd.msc`) → tarefa `Zapy`, ou `Get-ScheduledTask Zapy`
+- **Reiniciar:** `Stop-ScheduledTask Zapy; Start-ScheduledTask Zapy`
+- **Desinstalar:** `.\scripts\uninstall-windows.ps1` (mantém `.env`; use `-Purge` para remover também o `.venv`)
+
+Ou manualmente, sem o instalador:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python app.py
+```
+
 ## Uso só do painel local
 
 ```bash
@@ -107,7 +132,27 @@ Para este dispositivo ser **controlado pelo ZAccess** (painel admin ou app):
    ```
    Ou use um gerenciador de ambiente (systemd, etc.) que carregue o `.env`.
 
-O cliente Socket.IO conecta ao namespace `/devices` do ZAccess, envia **heartbeat** e obedece ao comando **relay:toggle**. O painel local (porta 3080) continua funcionando em paralelo.
+O cliente Socket.IO conecta ao namespace `/devices` do ZAccess, envia **heartbeat** e obedece aos comandos **relay:toggle**, **face:enroll**, **face:revoke**, **face:open-door** e **face:reboot** (`zaccess_client.py`). O painel local (porta 3080) continua funcionando em paralelo.
+
+### Terminal facial com relé vinculado
+
+Quando um terminal facial (Hikvision/Intelbras) tem um relé do Zapy vinculado
+(`linkedRelayId` no ZAccess — usado quando a mesma porta também abre por
+convite/QR), abrir a porta pelo app ou painel dispara **os dois comandos**
+pro Zapy: o `face:open-door` de sempre (fala ISAPI/HTTP direto com o
+terminal) **e** um `relay:toggle` pro relé vinculado — mesmo comando que o
+toggle manual de porta já usa, sem evento novo pro Zapy tratar. Sem
+`linkedRelayId`, só o `face:open-door` é enviado.
+
+### `face:open-door` responde com `face:open-door-ack`
+
+`zaccess_client.py` chama `client.open_door()` (ISAPI no Hikvision, `relay
+trig` no Intelbras) e sempre responde com `face:open-door-ack` —
+`{terminalId, status: "opened"|"failed", error?}`. Quando o evento veio do
+app (não do painel admin), o servidor manda um campo extra `byApp` com o
+nome de quem pediu; o Zapy só **ecoa** esse campo de volta no ack, sem
+processá-lo. É assim que o relatório do ZAccess sabe quem abriu pelo app sem
+duplicar o log — o log final só é criado quando esse ack chega, nunca antes.
 
 ## Variáveis de ambiente
 

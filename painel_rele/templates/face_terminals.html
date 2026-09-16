@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Terminais faciais{% endblock %}
+
+{% block page_title %}Terminais faciais{% endblock %}
+{% block page_subtitle %}Cadastre os terminais Hikvision/Intelbras na rede local — este zapy fala direto com eles (enroll/revoke de rosto, abertura remota, reboot).{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn btn-primary" id="addTerminal">+ Novo terminal</button>
+{% endblock %}
+
+{% block content %}
+<div class="page-content narrow" style="padding:0; max-width:680px;">
+    <section class="panel">
+        <div id="terminalsList"></div>
+        <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum terminal cadastrado ainda.</p>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    var container = document.getElementById('terminalsList');
+    var emptyHint = document.getElementById('emptyHint');
+    var terminals = [];
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function cardHtml(t, idx) {
+        var isNew = !t.id;
+        var isIntelbras = t.vendor === 'intelbras';
+        return '' +
+        '<div class="terminal-card" data-idx="' + idx + '" data-id="' + escapeHtml(t.id) + '">' +
+            '<div class="field"><label>Nome</label><input class="f-name" value="' + escapeHtml(t.name) + '" placeholder="Catraca entrada"></div>' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Fabricante</label><select class="f-vendor">' +
+                    '<option value="hikvision"' + (isIntelbras ? '' : ' selected') + '>Hikvision (ISAPI)</option>' +
+                    '<option value="intelbras"' + (isIntelbras ? ' selected' : '') + '>Intelbras XPE (HTTP API)</option>' +
+                '</select></div>' +
+                '<div class="field"><label>Host/IP</label><input class="f-host" value="' + escapeHtml(t.host) + '" placeholder="192.168.1.100"></div>' +
+            '</div>' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Porta</label><input type="number" class="f-port" value="' + (t.port || 80) + '" min="1" max="65535"></div>' +
+                '<div class="field"><label>Usuário</label><input class="f-user" value="' + escapeHtml(t.username) + '" placeholder="admin"></div>' +
+            '</div>' +
+            '<div class="field"><label>Senha</label><input type="password" class="f-password" value="' + (t.password === '********' ? '' : escapeHtml(t.password)) + '" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
+            '<div class="field relay-level-field" style="display:' + (isIntelbras ? 'block' : 'none') + '">' +
+                '<label>Nível do relé (Intelbras)</label>' +
+                '<select class="f-relay-level">' +
+                    '<option value="0"' + (t.relay_level === 1 ? '' : ' selected') + '>0 — NO-COM</option>' +
+                    '<option value="1"' + (t.relay_level === 1 ? ' selected' : '') + '>1 — NC-COM</option>' +
+                '</select>' +
+                '<p class="hint">Depende de como o relé foi fiado na instalação — se a porta não abrir (ou abrir invertido), troque aqui.</p>' +
+            '</div>' +
+            '<div class="checks">' +
+                '<label class="chk"><input type="checkbox" class="f-https"' + (t.https ? ' checked' : '') + '> HTTPS</label>' +
+                '<label class="chk"><input type="checkbox" class="f-verify"' + (t.verify_tls !== false ? ' checked' : '') + '> Validar certificado</label>' +
+                '<label class="chk"><input type="checkbox" class="f-cockpit"' + (t.cockpit_enabled !== false ? ' checked' : '') + '> Liberado pro porteiro (cockpit)</label>' +
+            '</div>' +
+            '<div class="btn-row">' +
+                '<button type="button" class="btn btn-primary btn-save-terminal">Salvar</button>' +
+                '<button type="button" class="btn btn-outline btn-test-terminal"' + (isNew ? ' disabled title="Salve primeiro"' : '') + '>Testar conexão</button>' +
+                '<button type="button" class="btn btn-danger btn-remove-terminal">Remover</button>' +
+            '</div>' +
+            '<div class="msg test-result"></div>' +
+        '</div>';
+    }
+
+    function render() {
+        container.innerHTML = terminals.map(cardHtml).join('');
+        emptyHint.style.display = terminals.length === 0 ? 'block' : 'none';
+    }
+
+    function readCard(card) {
+        var relaySelect = card.querySelector('.f-relay-level');
+        return {
+            name: card.querySelector('.f-name').value.trim(),
+            vendor: card.querySelector('.f-vendor').value,
+            host: card.querySelector('.f-host').value.trim(),
+            port: parseInt(card.querySelector('.f-port').value, 10) || 80,
+            username: card.querySelector('.f-user').value.trim(),
+            password: card.querySelector('.f-password').value,
+            https: card.querySelector('.f-https').checked,
+            verify_tls: card.querySelector('.f-verify').checked,
+            cockpit_enabled: card.querySelector('.f-cockpit').checked,
+            relay_level: relaySelect ? parseInt(relaySelect.value, 10) : 0,
+        };
+    }
+
+    function showResult(el, text, isError) {
+        el.textContent = text;
+        el.className = 'msg test-result ' + (isError ? 'error' : 'success');
+        el.style.display = 'block';
+    }
+
+    container.addEventListener('change', function(e) {
+        if (e.target.classList.contains('f-vendor')) {
+            var card = e.target.closest('.terminal-card');
+            card.querySelector('.relay-level-field').style.display = e.target.value === 'intelbras' ? 'block' : 'none';
+        }
+    });
+
+    container.addEventListener('click', function(e) {
+        var card = e.target.closest('.terminal-card');
+        if (!card) return;
+        var idx = parseInt(card.getAttribute('data-idx'), 10);
+        var id = card.getAttribute('data-id');
+        var resultEl = card.querySelector('.test-result');
+
+        if (e.target.classList.contains('btn-save-terminal')) {
+            var payload = readCard(card);
+            if (!payload.host || !payload.username) {
+                showResult(resultEl, 'Preencha ao menos Host/IP e Usuário.', true);
+                return;
+            }
+            e.target.disabled = true;
+            var req = id
+                ? fetch('/api/face-terminals/' + id, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+                : fetch('/api/face-terminals', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            req.then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+                .then(function(o) {
+                    if (!o.ok) { showResult(resultEl, o.json.message || 'Erro ao salvar.', true); return; }
+                    terminals[idx] = o.json;
+                    render();
+                })
+                .catch(function() { showResult(resultEl, 'Erro de conexão ao salvar.', true); })
+                .finally(function() { e.target.disabled = false; });
+        }
+
+        if (e.target.classList.contains('btn-remove-terminal')) {
+            if (!id) { terminals.splice(idx, 1); render(); return; }
+            if (!confirm('Remover este terminal? Isso não remove nada do terminal físico, só o cadastro aqui.')) return;
+            fetch('/api/face-terminals/' + id, { method: 'DELETE' })
+                .then(function() { terminals.splice(idx, 1); render(); })
+                .catch(function() { showResult(resultEl, 'Erro ao remover.', true); });
+        }
+
+        if (e.target.classList.contains('btn-test-terminal') && id) {
+            e.target.disabled = true;
+            showResult(resultEl, 'Testando…', false);
+            fetch('/api/face-terminals/' + id + '/test', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        showResult(resultEl, 'Conectado: ' + JSON.stringify(data.info), false);
+                    } else {
+                        showResult(resultEl, data.message || 'Falha ao conectar.', true);
+                    }
+                })
+                .catch(function() { showResult(resultEl, 'Erro de conexão.', true); })
+                .finally(function() { e.target.disabled = false; });
+        }
+    });
+
+    document.getElementById('addTerminal').addEventListener('click', function() {
+        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0 });
+        render();
+    });
+
+    fetch('/api/face-terminals')
+        .then(function(r) { return r.json(); })
+        .then(function(data) { terminals = data; render(); })
+        .catch(function() { emptyHint.textContent = 'Erro ao carregar terminais.'; emptyHint.style.display = 'block'; });
+})();
+</script>
+{% endblock %}

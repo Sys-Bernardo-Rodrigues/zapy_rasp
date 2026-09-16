@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zapy{% block title_suffix %}{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+{% import "_icons.html" as icons %}
+{% set path = request.path %}
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <img src="{{ url_for('static', filename='logo.svg') }}" alt="Zapy">
+                <div class="sidebar-brand-text">
+                    <span>Zapy</span>
+                    <span>{{ session.username or session.role or 'dispositivo' }}</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                {% if session.role == 'admin' %}
+                <a class="nav-item{{ ' active' if path == '/' }}" href="/">{{ icons.layout_dashboard() }}Painel</a>
+                {% endif %}
+                <a class="nav-item{{ ' active' if path == '/cockpit' }}" href="/cockpit">{{ icons.door_open() }}Cockpit</a>
+                <a class="nav-item{{ ' active' if path == '/eventos' }}" href="/eventos">{{ icons.alert_triangle() }}Eventos</a>
+                {% if session.role == 'admin' %}
+                <a class="nav-item{{ ' active' if path == '/face-terminals' }}" href="/face-terminals">{{ icons.scan_face() }}Terminais faciais</a>
+                <a class="nav-item{{ ' active' if path == '/usuarios' }}" href="/usuarios">{{ icons.users() }}Usuários</a>
+                <a class="nav-item{{ ' active' if path == '/config' }}" href="/config">{{ icons.settings() }}Configurações</a>
+                <a class="nav-item{{ ' active' if path == '/health' }}" href="/health">{{ icons.heart_pulse() }}Saúde</a>
+                {% endif %}
+            </nav>
+
+            <div class="sidebar-footer">
+                <a class="nav-item logout" href="/logout">{{ icons.log_out() }}Sair</a>
+            </div>
+        </aside>
+
+        <div class="main-area">
+            <header class="page-header">
+                <div>
+                    <h1>{% block page_title %}{% endblock %}</h1>
+                    <p>{% block page_subtitle %}{% endblock %}</p>
+                </div>
+                <div class="page-header-actions">{% block page_actions %}{% endblock %}</div>
+            </header>
+            <main class="page-content">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+
+{% block extra_body %}{% endblock %}
+</body>
+</html>

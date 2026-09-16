@@ -2,4 +2,5 @@ flask>=3.0
 gpiozero>=2.0
 python-socketio[client]>=5.10
 python-dotenv>=1.0
+requests>=2.31
 lgpio>=0.2.0; sys_platform == 'linux'

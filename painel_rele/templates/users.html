@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Usuários{% endblock %}
+
+{% block page_title %}Usuários{% endblock %}
+{% block page_subtitle %}Contas de acesso além do admin de bootstrap — pense no porteiro do local: login próprio, sem a senha de admin, que só abre portas/terminais e vê eventos no cockpit.{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn btn-primary" id="addUser">+ Novo usuário</button>
+{% endblock %}
+
+{% block content %}
+<div class="page-content narrow" style="padding:0; max-width:680px;">
+    <section class="panel">
+        <div id="usersList"></div>
+        <p class="empty-hint" id="emptyHint" style="display:none;">Nenhum usuário extra cadastrado ainda.</p>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    var container = document.getElementById('usersList');
+    var emptyHint = document.getElementById('emptyHint');
+    var users = [];
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function cardHtml(u, idx) {
+        var isNew = !u.id;
+        return '' +
+        '<div class="terminal-card" data-idx="' + idx + '" data-id="' + escapeHtml(u.id) + '">' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Usuário (login)</label><input class="f-username" value="' + escapeHtml(u.username) + '" placeholder="porteiro" ' + (isNew ? '' : 'disabled') + '></div>' +
+                '<div class="field"><label>Nome</label><input class="f-name" value="' + escapeHtml(u.name) + '" placeholder="João (portaria)"></div>' +
+            '</div>' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Papel</label><select class="f-role">' +
+                    '<option value="porteiro"' + (u.role === 'admin' ? '' : ' selected') + '>Porteiro (só cockpit)</option>' +
+                    '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>Admin (painel completo)</option>' +
+                '</select></div>' +
+                '<div class="field"><label>Senha</label><input type="password" class="f-password" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
+            '</div>' +
+            '<div class="checks">' +
+                '<label class="chk"><input type="checkbox" class="f-active"' + (u.active !== false ? ' checked' : '') + '> Ativo</label>' +
+            '</div>' +
+            '<div class="btn-row">' +
+                '<button type="button" class="btn btn-primary btn-save-user">Salvar</button>' +
+                '<button type="button" class="btn btn-danger btn-remove-user">Remover</button>' +
+            '</div>' +
+            '<div class="msg save-result"></div>' +
+        '</div>';
+    }
+
+    function render() {
+        container.innerHTML = users.map(cardHtml).join('');
+        emptyHint.style.display = users.length === 0 ? 'block' : 'none';
+    }
+
+    function readCard(card) {
+        return {
+            username: card.querySelector('.f-username').value.trim(),
+            name: card.querySelector('.f-name').value.trim(),
+            role: card.querySelector('.f-role').value,
+            password: card.querySelector('.f-password').value,
+            active: card.querySelector('.f-active').checked,
+        };
+    }
+
+    function showResult(el, text, isError) {
+        el.textContent = text;
+        el.className = 'msg save-result ' + (isError ? 'error' : 'success');
+        el.style.display = 'block';
+    }
+
+    container.addEventListener('click', function(e) {
+        var card = e.target.closest('.terminal-card');
+        if (!card) return;
+        var idx = parseInt(card.getAttribute('data-idx'), 10);
+        var id = card.getAttribute('data-id');
+        var resultEl = card.querySelector('.save-result');
+
+        if (e.target.classList.contains('btn-save-user')) {
+            var payload = readCard(card);
+            if (!payload.username) {
+                showResult(resultEl, 'Preencha o usuário (login).', true);
+                return;
+            }
+            if (!id && !payload.password) {
+                showResult(resultEl, 'Senha é obrigatória pra um usuário novo.', true);
+                return;
+            }
+            e.target.disabled = true;
+            var req = id
+                ? fetch('/api/users/' + id, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+                : fetch('/api/users', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            req.then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+                .then(function(o) {
+                    if (!o.ok) { showResult(resultEl, o.json.message || 'Erro ao salvar.', true); return; }
+                    users[idx] = o.json;
+                    render();
+                })
+                .catch(function() { showResult(resultEl, 'Erro de conexão ao salvar.', true); })
+                .finally(function() { e.target.disabled = false; });
+        }
+
+        if (e.target.classList.contains('btn-remove-user')) {
+            if (!id) { users.splice(idx, 1); render(); return; }
+            if (!confirm('Remover este usuário?')) return;
+            fetch('/api/users/' + id, { method: 'DELETE' })
+                .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+                .then(function(o) {
+                    if (!o.ok) { showResult(resultEl, o.json.message || 'Erro ao remover.', true); return; }
+                    users.splice(idx, 1);
+                    render();
+                })
+                .catch(function() { showResult(resultEl, 'Erro ao remover.', true); });
+        }
+    });
+
+    document.getElementById('addUser').addEventListener('click', function() {
+        users.push({ id: '', username: '', name: '', role: 'porteiro', active: true });
+        render();
+    });
+
+    fetch('/api/users')
+        .then(function(r) { return r.json(); })
+        .then(function(data) { users = data; render(); })
+        .catch(function() { emptyHint.textContent = 'Erro ao carregar usuários.'; emptyHint.style.display = 'block'; });
+})();
+</script>
+{% endblock %}

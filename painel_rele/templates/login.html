@@ -4,149 +4,51 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zapy – Login</title>
-    <link rel="icon" type="image/png" href="https://img.icons8.com/color-glass/48/thunderbolt.png">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #f3f4f6;
-            --card: #ffffff;
-            --border: #e5e7eb;
-            --text: #111827;
-            --text-muted: #6b7280;
-            --accent: #8b5cf6;
-            --accent-hover: #7c3aed;
-            --danger: #dc2626;
-        }
-        * { box-sizing: border-box; }
-        body {
-            font-family: 'Outfit', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-            background: radial-gradient(circle at top left, #eef2ff 0, #f9fafb 40%, #e5e7eb 100%);
-            margin: 0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .card {
-            background: var(--card);
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            padding: 20px 20px 18px;
-            width: 100%;
-            max-width: 360px;
-            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10);
-        }
-        .header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-        .logo {
-            width: 28px;
-            height: 28px;
-            border-radius: 8px;
-            background: conic-gradient(from 140deg, #8b5cf6, #a855f7, #8b5cf6);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 0.9rem;
-            color: #020617;
-        }
-        .title {
-            display: flex;
-            flex-direction: column;
-        }
-        .title span:first-child {
-            font-size: 0.98rem;
-            font-weight: 600;
-        }
-        .title span:last-child {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-        }
-        form {
-            margin-top: 10px;
-        }
-        label {
-            display: block;
-            font-size: 0.8rem;
-            font-weight: 500;
-            color: var(--text-muted);
-            margin-bottom: 4px;
-        }
-        input {
-            width: 100%;
-            padding: 8px 10px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: #fff;
-            color: var(--text);
-            font-size: 0.86rem;
-            margin-bottom: 10px;
-        }
-        input:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-        .error {
-            font-size: 0.78rem;
-            color: var(--danger);
-            margin-bottom: 8px;
-        }
-        button {
-            width: 100%;
-            padding: 9px 0;
-            border-radius: 999px;
-            border: none;
-            background: var(--accent);
-            color: #f9fafb;
-            font-size: 0.9rem;
-            font-weight: 600;
-            cursor: pointer;
-        }
-        button:hover {
-            background: var(--accent-hover);
-        }
-        .hint {
-            margin-top: 8px;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            text-align: center;
-        }
-        .hint code {
-            background: #f3f4f6;
-            padding: 1px 4px;
-            border-radius: 4px;
-        }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div class="card">
-        <div class="header">
-            <div class="logo">Z</div>
-            <div class="title">
-                <span>Zapy – Login</span>
-                <span>Acesso ao painel do dispositivo</span>
+    <div class="auth-layout">
+        <div class="auth-brand">
+            <div class="glow-1"></div>
+            <div class="glow-2"></div>
+            <div class="brand-mark">
+                <img class="brand-wordmark" src="{{ url_for('static', filename='wordmark-white.svg') }}" alt="Zapy">
+            </div>
+            <div>
+                <h1>Seu dispositivo, sempre conectado.</h1>
+                <ul>
+                    <li>Controle de relés e sensores em tempo real</li>
+                    <li>Terminais de reconhecimento facial monitorados</li>
+                    <li>Sincronizado com o ZAccess, sem intervenção manual</li>
+                </ul>
+            </div>
+            <p class="footnote">Zapy — agente de borda ZAccess</p>
+        </div>
+
+        <div class="auth-form-side">
+            <div class="auth-form-card">
+                <h1>Entrar</h1>
+                <form method="post">
+                    <div class="field">
+                        <label for="username">Usuário</label>
+                        <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+                    </div>
+                    <div class="field">
+                        <label for="password">Senha</label>
+                        <input type="password" id="password" name="password" autocomplete="current-password" required>
+                    </div>
+                    {% if error %}
+                    <p class="msg error">{{ error }}</p>
+                    {% endif %}
+                    <button type="submit" class="btn btn-primary btn-block" style="margin-top: 8px;">Entrar</button>
+                </form>
+                <p class="hint">Acesso ao painel deste dispositivo físico.</p>
             </div>
         </div>
-        <form method="post">
-            <label for="username">Usuário</label>
-            <input type="text" id="username" name="username" autocomplete="username" required>
-
-            <label for="password">Senha</label>
-            <input type="password" id="password" name="password" autocomplete="current-password" required>
-
-            {% if error %}
-            <div class="error">{{ error }}</div>
-            {% endif %}
-
-            <button type="submit">Entrar</button>
-        </form>
     </div>
 </body>
 </html>
-
