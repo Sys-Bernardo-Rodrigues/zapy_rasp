@@ -576,6 +576,8 @@ def run_zaccess_client(
             comando administrativo direto, não passa pelo reconhecimento facial."""
             terminal_id = str(data.get("terminalId") or "")
             by_app = data.get("byApp")
+            by_user_id = data.get("byUserId")
+            by_location_user_id = data.get("byLocationUserId")
             client = face_clients.get(terminal_id)
             if not client:
                 logger.error("ZAccess: face:open-door pra terminal desconhecido %s", terminal_id)
@@ -589,9 +591,15 @@ def run_zaccess_client(
                         if not result.get("ok"):
                             payload["error"] = result.get("reason")
                         # Ecoa quem pediu (só o servidor sabe, veio no evento) — o handler do
-                        # ack usa isso pra logar com o nome de quem abriu, em vez de genérico.
+                        # ack usa isso pra logar com o nome de quem abriu (byApp) e popular a
+                        # referência de verdade no ActivityLog (byUserId/byLocationUserId), em
+                        # vez de genérico.
                         if by_app:
                             payload["byApp"] = by_app
+                        if by_user_id:
+                            payload["byUserId"] = by_user_id
+                        if by_location_user_id:
+                            payload["byLocationUserId"] = by_location_user_id
                         sio.emit("face:open-door-ack", payload, namespace=NAMESPACE)
                 except Exception:
                     pass
