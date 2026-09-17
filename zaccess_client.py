@@ -27,6 +27,12 @@ from face_agent.intelbras_biot_client import IntelbrasBioTClient
 
 logger = logging.getLogger(__name__)
 
+# Versão do zapy_rasp em si (não é firmware de hardware) — mandada no handshake pra
+# aparecer na coluna "Firmware" do painel ZAccess em vez do default estático '1.0.0'
+# do model (Device.metadata.firmware nunca era atualizado, mostrava sempre o mesmo
+# valor não importa o que estivesse rodando de verdade). Bump manual a cada release.
+ZAPY_VERSION = "1.0.0"
+
 NAMESPACE = "/devices"
 HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.IO)
 INPUT_PUSH_INTERVAL = 30 # backup: reenvio periódico; mudanças reais são enviadas na hora via callback
@@ -54,7 +60,7 @@ def run_zaccess_client(
     Conecta ao ZAccess via Socket.IO (namespace /devices).
     Envia relay:state-update e input:state-update (sensores/botões) quando configurado.
     """
-    auth = {"serialNumber": serial_number}
+    auth = {"serialNumber": serial_number, "firmwareVersion": ZAPY_VERSION}
     if auth_token:
         auth["authToken"] = auth_token
 
