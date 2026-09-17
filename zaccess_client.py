@@ -9,6 +9,7 @@ import os
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import socketio
 
@@ -604,6 +605,21 @@ def run_zaccess_client(
                 except Exception:
                     pass
                 logger.info("ZAccess: abertura remota do terminal %s -> %s", terminal_id, result)
+
+                if result.get("ok"):
+                    # Mesmo tratamento do cockpit (app.py) — sem isso a abertura pedida pelo
+                    # ZAccess (painel ou app) fica invisível no /eventos local: não passa por
+                    # reconhecimento, não gera AcsEvent/doorlog nenhum pra poller pegar.
+                    now = datetime.now(timezone(timedelta(hours=-3)))
+                    capture_snapshot = getattr(client, "capture_snapshot", None)
+                    label = f"Liberado via ZAccess ({by_app})" if by_app else "Liberado via ZAccess"
+                    local_store.add_events([{
+                        "dedupe_key": f"{terminal_id}:zaccess-open:{now.strftime('%Y%m%dT%H%M%S%f')}",
+                        "terminal_id": terminal_id, "employee_no": None, "time": now.isoformat(),
+                        "direction": "unknown", "success": True, "source": "zaccess",
+                        "picture": capture_snapshot() if capture_snapshot else None,
+                        "device_name": label,
+                    }])
 
             threading.Thread(target=run, daemon=True).start()
 
