@@ -90,11 +90,11 @@ class IntelbrasClientTest(unittest.TestCase):
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": []}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "action": "add", "message": "OK"}),
         ]
-        status = self._client().enroll_card("123", "Fulano", "AAABBB")
+        status = self._client().enroll_card("123", "Fulano", "1")
         self.assertEqual(status, "created")
         sent = mock_post.call_args.kwargs["json"]
-        # XPE3200 grava com bytes revertidos — ver test_enroll_card_reverses_bytes_for_xpe3200.
-        self.assertEqual(sent["data"]["item"][0]["CardCode"], "BBABAA")
+        # decimal 1 -> hex "00000001" -> bytes revertidos pelo XPE3200 -> "01000000".
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "01000000")
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_enroll_card_reverses_bytes_for_xpe3200(self, mock_post):
@@ -104,9 +104,15 @@ class IntelbrasClientTest(unittest.TestCase):
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": []}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "action": "add", "message": "OK"}),
         ]
-        self._client().enroll_card("123", "Fulano", "905F4D91")
+        self._client().enroll_card("123", "Fulano", "2422164881")
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["item"][0]["CardCode"], "914D5F90")
+
+    def test_enroll_card_rejects_non_decimal(self):
+        # ZAccess sempre manda decimal agora — um valor não numérico é erro de input, não
+        # deve virar hex "por acidente".
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_card("123", "Fulano", "905F4D91")
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_enroll_card_preserves_existing_face(self, mock_post):
@@ -114,33 +120,33 @@ class IntelbrasClientTest(unittest.TestCase):
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "FaceImage": "existingb64"}]}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0}),
         ]
-        status = self._client().enroll_card("123", "Fulano", "AAABBB")
+        status = self._client().enroll_card("123", "Fulano", "1")
         self.assertEqual(status, "updated")
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["item"][0]["FaceImage"], "existingb64")
-        self.assertEqual(sent["data"]["item"][0]["CardCode"], "BBABAA")
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "01000000")
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_enroll_card_appends_to_existing_cards(self, mock_post):
-        # Pessoa já tem o cartão AAABBB (gravado como "BBABAA") — cadastrar CCCDDD não
-        # pode sobrescrever, só somar.
+        # Pessoa já tem o cartão decimal 1 (gravado como "01000000") — cadastrar o cartão
+        # decimal 2 (gravado como "02000000") não pode sobrescrever, só somar.
         mock_post.side_effect = [
-            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "BBABAA"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "01000000"}]}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0}),
         ]
-        self._client().enroll_card("123", "Fulano", "CCCDDD")
+        self._client().enroll_card("123", "Fulano", "2")
         sent = mock_post.call_args.kwargs["json"]
-        self.assertEqual(sent["data"]["item"][0]["CardCode"], "BBABAA,DDCDCC")
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "01000000,02000000")
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_enroll_card_idempotent_when_already_present(self, mock_post):
         mock_post.side_effect = [
-            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "BBABAA"}]}}),
+            MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [{"ID": 7, "UserID": "123", "CardCode": "01000000"}]}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0}),
         ]
-        self._client().enroll_card("123", "Fulano", "AAABBB")
+        self._client().enroll_card("123", "Fulano", "1")
         sent = mock_post.call_args.kwargs["json"]
-        self.assertEqual(sent["data"]["item"][0]["CardCode"], "BBABAA")
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "01000000")
 
     def test_enroll_card_rejects_empty(self):
         with self.assertRaises(FaceProvisioningError):
@@ -150,14 +156,14 @@ class IntelbrasClientTest(unittest.TestCase):
     def test_delete_card_clears_field_keeps_face(self, mock_post):
         mock_post.side_effect = [
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
-                {"ID": 7, "UserID": "123", "Name": "Fulano", "FaceImage": "existingb64", "CardCode": "BBABAA"},
+                {"ID": 7, "UserID": "123", "Name": "Fulano", "FaceImage": "existingb64", "CardCode": "01000000"},
             ]}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
-                {"ID": 7, "UserID": "123", "Name": "Fulano", "FaceImage": "existingb64", "CardCode": "BBABAA"},
+                {"ID": 7, "UserID": "123", "Name": "Fulano", "FaceImage": "existingb64", "CardCode": "01000000"},
             ]}}),
             MagicMock(status_code=200, json=lambda: {"retcode": 0}),
         ]
-        self._client().delete_card("123", "AAABBB")
+        self._client().delete_card("123", "1")
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(sent["data"]["item"][0]["CardCode"], "")
         self.assertEqual(sent["data"]["item"][0]["FaceImage"], "existingb64")
@@ -165,17 +171,17 @@ class IntelbrasClientTest(unittest.TestCase):
     @patch("face_agent.intelbras_client.requests.post")
     def test_delete_card_keeps_other_cards(self, mock_post):
         existing_response = MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": [
-            {"ID": 7, "UserID": "123", "Name": "Fulano", "CardCode": "BBABAA,DDCDCC"},
+            {"ID": 7, "UserID": "123", "Name": "Fulano", "CardCode": "01000000,02000000"},
         ]}})
         mock_post.side_effect = [existing_response, existing_response, MagicMock(status_code=200, json=lambda: {"retcode": 0})]
-        self._client().delete_card("123", "AAABBB")
+        self._client().delete_card("123", "1")
         sent = mock_post.call_args.kwargs["json"]
-        self.assertEqual(sent["data"]["item"][0]["CardCode"], "DDCDCC")
+        self.assertEqual(sent["data"]["item"][0]["CardCode"], "02000000")
 
     @patch("face_agent.intelbras_client.requests.post")
     def test_delete_card_noop_when_user_missing(self, mock_post):
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"retcode": 0, "data": {"item": []}})
-        self._client().delete_card("999", "AAABBB")  # não deve lançar
+        self._client().delete_card("999", "1")  # não deve lançar
         self.assertEqual(mock_post.call_count, 1)
 
     @patch("face_agent.intelbras_client.requests.post")

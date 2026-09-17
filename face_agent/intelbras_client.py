@@ -32,17 +32,27 @@ def _split_card_codes(raw) -> list[str]:
     return [c for c in str(raw).split(_CARD_CODE_SEP) if c]
 
 
-def _swap_card_bytes(card_no: str) -> str:
+def _swap_card_bytes(hexstr: str) -> str:
     """XPE3200: a leitora embutida do terminal inverte a ordem dos bytes do código do
     cartão em relação à conversão hexadecimal padrão (decimal->hex "de livro"). Confirmado
     com hardware real: cartão decimal 2422164881 = 0x905F4D91 na conversão padrão, mas o
     terminal cadastra/lê 0x914D5F90 (bytes revertidos). Sem essa correção, um CardCode
     gravado via API nunca bate com o que a leitora física da porta lê do mesmo cartão."""
-    hexstr = card_no.strip().upper()
     if len(hexstr) % 2:
         hexstr = "0" + hexstr
     pairs = [hexstr[i:i + 2] for i in range(0, len(hexstr), 2)]
     return "".join(reversed(pairs))
+
+
+def _card_no_to_device_code(card_no: str) -> str:
+    """ZAccess sempre manda card_no em decimal (o número impresso no cartão) — converte
+    pro hex de 4 bytes que o CardCode do XPE espera (doc oficial, ex.: "12EA3004") e já
+    aplica a inversão de bytes da leitora embutida (_swap_card_bytes)."""
+    try:
+        value = int(str(card_no).strip())
+    except (TypeError, ValueError):
+        raise FaceProvisioningError(f"código do cartão inválido, esperado decimal: {card_no!r}")
+    return _swap_card_bytes(format(value, "08X"))
 
 
 @dataclass
@@ -167,14 +177,14 @@ class IntelbrasClient:
     def enroll_card(self, employee_no: str, name: str, card_no: str) -> str:
         """Adiciona um cartão ao usuário, preservando face e outros cartões já cadastrados
         — CardCode guarda múltiplos cartões por pessoa separados por vírgula (documentado
-        oficialmente: "AAABBB,00112233"). card_no chega em hexadecimal "padrão" (conversão
-        direta do decimal impresso no cartão) e é gravado com os bytes revertidos — ver
-        _swap_card_bytes — pra bater com o que a leitora embutida do XPE3200 lê na porta.
+        oficialmente: "AAABBB,00112233"). card_no chega em decimal (número impresso no
+        cartão, mesmo formato pro painel inteiro) — ver _card_no_to_device_code pra
+        conversão pro hex de 4 bytes + inversão que a leitora embutida do XPE3200 espera.
         Idempotente: card_no já presente não duplica na lista."""
         if not card_no:
             raise FaceProvisioningError("código do cartão vazio")
 
-        device_code = _swap_card_bytes(card_no)
+        device_code = _card_no_to_device_code(card_no)
 
         def build(existing):
             codes = _split_card_codes(existing.get("CardCode")) if existing else []
@@ -192,7 +202,7 @@ class IntelbrasClient:
         existing = self._find_existing_user(employee_no)
         if existing is None:
             return
-        device_code = _swap_card_bytes(card_no)
+        device_code = _card_no_to_device_code(card_no)
         self._upsert_credential(
             employee_no, existing.get("Name") or employee_no,
             lambda e: {"CardCode": _CARD_CODE_SEP.join(c for c in _split_card_codes(e.get("CardCode")) if c != device_code)},
