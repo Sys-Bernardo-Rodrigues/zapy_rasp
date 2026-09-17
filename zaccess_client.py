@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # aparecer na coluna "Firmware" do painel ZAccess em vez do default estático '1.0.0'
 # do model (Device.metadata.firmware nunca era atualizado, mostrava sempre o mesmo
 # valor não importa o que estivesse rodando de verdade). Bump manual a cada release.
-ZAPY_VERSION = "1.0.0"
+ZAPY_VERSION = "1.1.0"
 
 NAMESPACE = "/devices"
 HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.IO)
