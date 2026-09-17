@@ -32,6 +32,19 @@ def _split_card_codes(raw) -> list[str]:
     return [c for c in str(raw).split(_CARD_CODE_SEP) if c]
 
 
+def _swap_card_bytes(card_no: str) -> str:
+    """XPE3200: a leitora embutida do terminal inverte a ordem dos bytes do código do
+    cartão em relação à conversão hexadecimal padrão (decimal->hex "de livro"). Confirmado
+    com hardware real: cartão decimal 2422164881 = 0x905F4D91 na conversão padrão, mas o
+    terminal cadastra/lê 0x914D5F90 (bytes revertidos). Sem essa correção, um CardCode
+    gravado via API nunca bate com o que a leitora física da porta lê do mesmo cartão."""
+    hexstr = card_no.strip().upper()
+    if len(hexstr) % 2:
+        hexstr = "0" + hexstr
+    pairs = [hexstr[i:i + 2] for i in range(0, len(hexstr), 2)]
+    return "".join(reversed(pairs))
+
+
 @dataclass
 class IntelbrasTerminal:
     host: str
@@ -154,30 +167,35 @@ class IntelbrasClient:
     def enroll_card(self, employee_no: str, name: str, card_no: str) -> str:
         """Adiciona um cartão ao usuário, preservando face e outros cartões já cadastrados
         — CardCode guarda múltiplos cartões por pessoa separados por vírgula (documentado
-        oficialmente: "AAABBB,00112233"). card_no é tratado como opaco (formato
-        hexadecimal por convenção do device). Idempotente: card_no já presente não duplica
-        na lista."""
+        oficialmente: "AAABBB,00112233"). card_no chega em hexadecimal "padrão" (conversão
+        direta do decimal impresso no cartão) e é gravado com os bytes revertidos — ver
+        _swap_card_bytes — pra bater com o que a leitora embutida do XPE3200 lê na porta.
+        Idempotente: card_no já presente não duplica na lista."""
         if not card_no:
             raise FaceProvisioningError("código do cartão vazio")
 
+        device_code = _swap_card_bytes(card_no)
+
         def build(existing):
             codes = _split_card_codes(existing.get("CardCode")) if existing else []
-            if card_no not in codes:
-                codes.append(card_no)
+            if device_code not in codes:
+                codes.append(device_code)
             return {"CardCode": _CARD_CODE_SEP.join(codes)}
 
         return self._upsert_credential(employee_no, name, build)
 
     def delete_card(self, employee_no: str, card_no: str) -> None:
         """Remove só um cartão específico do usuário (mantém a face e os outros cartões) —
-        reescreve CardCode sem o card_no informado. Idempotente: usuário ou cartão
-        inexistente não lança."""
+        reescreve CardCode sem o card_no informado (mesma conversão de bytes do enroll_card,
+        pra achar a entrada certa na lista). Idempotente: usuário ou cartão inexistente não
+        lança."""
         existing = self._find_existing_user(employee_no)
         if existing is None:
             return
+        device_code = _swap_card_bytes(card_no)
         self._upsert_credential(
             employee_no, existing.get("Name") or employee_no,
-            lambda e: {"CardCode": _CARD_CODE_SEP.join(c for c in _split_card_codes(e.get("CardCode")) if c != card_no)},
+            lambda e: {"CardCode": _CARD_CODE_SEP.join(c for c in _split_card_codes(e.get("CardCode")) if c != device_code)},
         )
 
     def delete_user_info(self, employee_no: str) -> None:
