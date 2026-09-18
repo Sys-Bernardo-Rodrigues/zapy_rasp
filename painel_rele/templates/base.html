@@ -32,6 +32,7 @@
                 <a class="nav-item{{ ' active' if path == '/eventos' }}" href="/eventos">{{ icons.alert_triangle() }}Eventos</a>
                 {% if session.role == 'admin' %}
                 <a class="nav-item{{ ' active' if path == '/face-terminals' }}" href="/face-terminals">{{ icons.scan_face() }}Terminais faciais</a>
+                <a class="nav-item{{ ' active' if path == '/vehicle-antennas' }}" href="/vehicle-antennas">{{ icons.car() }}Antenas veiculares</a>
                 <a class="nav-item{{ ' active' if path == '/usuarios' }}" href="/usuarios">{{ icons.users() }}Usuários</a>
                 <a class="nav-item{{ ' active' if path == '/config' }}" href="/config">{{ icons.settings() }}Configurações</a>
                 <a class="nav-item{{ ' active' if path == '/health' }}" href="/health">{{ icons.heart_pulse() }}Saúde</a>

@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title_suffix %} – Antenas veiculares{% endblock %}
+
+{% block page_title %}Antenas veiculares{% endblock %}
+{% block page_subtitle %}Cadastre as antenas Control iD iDUHF na rede local — este zapy fala direto com elas (enroll/revoke de tag, abertura de cancela, reboot).{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn btn-primary" id="addAntenna">+ Nova antena</button>
+{% endblock %}
+
+{% block content %}
+<div class="page-content narrow" style="padding:0; max-width:680px;">
+    <section class="panel">
+        <div id="antennasList"></div>
+        <p class="empty-hint" id="emptyHint" style="display:none;">Nenhuma antena cadastrada ainda.</p>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_body %}
+<script>
+(function() {
+    var container = document.getElementById('antennasList');
+    var emptyHint = document.getElementById('emptyHint');
+    var antennas = [];
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function cardHtml(a, idx) {
+        var isNew = !a.id;
+        return '' +
+        '<div class="terminal-card" data-idx="' + idx + '" data-id="' + escapeHtml(a.id) + '">' +
+            '<div class="field"><label>Nome</label><input class="f-name" value="' + escapeHtml(a.name) + '" placeholder="Antena Portão Principal"></div>' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Fabricante</label><select class="f-vendor">' +
+                    '<option value="controlid" selected>Control iD (iDUHF)</option>' +
+                '</select></div>' +
+                '<div class="field"><label>Host/IP</label><input class="f-host" value="' + escapeHtml(a.host) + '" placeholder="192.168.1.200"></div>' +
+            '</div>' +
+            '<div class="grid2">' +
+                '<div class="field"><label>Porta</label><input type="number" class="f-port" value="' + (a.port || 80) + '" min="1" max="65535"></div>' +
+                '<div class="field"><label>Usuário</label><input class="f-user" value="' + escapeHtml(a.username) + '" placeholder="admin"></div>' +
+            '</div>' +
+            '<div class="field"><label>Senha</label><input type="password" class="f-password" value="' + escapeHtml(a.password) + '" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
+            '<div class="field"><label>Saída da cancela</label><select class="f-gate-output">' +
+                '<option value="contact"' + (a.gate_output === 'secbox' ? '' : ' selected') + '>Contato/relé da própria antena</option>' +
+                '<option value="secbox"' + (a.gate_output === 'secbox' ? ' selected' : '') + '>Módulo SecBox externo</option>' +
+            '</select></div>' +
+            '<div class="field gate-contact-field" style="display:' + (a.gate_output === 'secbox' ? 'none' : 'block') + '">' +
+                '<label>Número da porta/saída</label>' +
+                '<input type="number" class="f-door-id" value="' + (a.door_id || 1) + '" min="1">' +
+            '</div>' +
+            '<div class="field gate-secbox-field" style="display:' + (a.gate_output === 'secbox' ? 'block' : 'none') + '">' +
+                '<label>ID do SecBox</label>' +
+                '<input type="number" class="f-secbox-id" value="' + (a.secbox_id || '') + '" placeholder="65793">' +
+                '<p class="hint">ID do objeto SecBox já cadastrado na própria antena (não é um id nosso).</p>' +
+            '</div>' +
+            '<div class="field"><label>Grupo/departamento</label><input type="number" class="f-group-id" value="' + (a.group_id || '') + '" placeholder="Ex: 2"></div>' +
+            '<p class="hint">ID do grupo já cadastrado na antena ao qual todo usuário/veículo daqui é associado — sem isso a tag não autoriza passagem, mesmo cadastrada.</p>' +
+            '<div class="checks">' +
+                '<label class="chk"><input type="checkbox" class="f-https"' + (a.https ? ' checked' : '') + '> HTTPS</label>' +
+                '<label class="chk"><input type="checkbox" class="f-verify"' + (a.verify_tls !== false ? ' checked' : '') + '> Validar certificado</label>' +
+                '<label class="chk"><input type="checkbox" class="f-cockpit"' + (a.cockpit_enabled !== false ? ' checked' : '') + '> Liberado pro porteiro (cockpit)</label>' +
+            '</div>' +
+            '<div class="btn-row">' +
+                '<button type="button" class="btn btn-primary btn-save-antenna">Salvar</button>' +
+                '<button type="button" class="btn btn-outline btn-test-antenna"' + (isNew ? ' disabled title="Salve primeiro"' : '') + '>Testar conexão</button>' +
+                '<button type="button" class="btn btn-danger btn-remove-antenna">Remover</button>' +
+            '</div>' +
+            '<div class="msg test-result"></div>' +
+        '</div>';
+    }
+
+    function render() {
+        container.innerHTML = antennas.map(cardHtml).join('');
+        emptyHint.style.display = antennas.length === 0 ? 'block' : 'none';
+    }
+
+    function readCard(card) {
+        return {
+            name: card.querySelector('.f-name').value.trim(),
+            vendor: card.querySelector('.f-vendor').value,
+            host: card.querySelector('.f-host').value.trim(),
+            port: parseInt(card.querySelector('.f-port').value, 10) || 80,
+            username: card.querySelector('.f-user').value.trim(),
+            password: card.querySelector('.f-password').value,
+            gate_output: card.querySelector('.f-gate-output').value,
+            door_id: parseInt(card.querySelector('.f-door-id').value, 10) || 1,
+            secbox_id: card.querySelector('.f-secbox-id').value.trim(),
+            group_id: card.querySelector('.f-group-id').value.trim(),
+            https: card.querySelector('.f-https').checked,
+            verify_tls: card.querySelector('.f-verify').checked,
+            cockpit_enabled: card.querySelector('.f-cockpit').checked,
+        };
+    }
+
+    function showResult(el, text, isError) {
+        el.textContent = text;
+        el.className = 'msg test-result ' + (isError ? 'error' : 'success');
+        el.style.display = 'block';
+    }
+
+    container.addEventListener('change', function(e) {
+        if (e.target.classList.contains('f-gate-output')) {
+            var card = e.target.closest('.terminal-card');
+            var isSecbox = e.target.value === 'secbox';
+            card.querySelector('.gate-contact-field').style.display = isSecbox ? 'none' : 'block';
+            card.querySelector('.gate-secbox-field').style.display = isSecbox ? 'block' : 'none';
+        }
+    });
+
+    container.addEventListener('click', function(e) {
+        var card = e.target.closest('.terminal-card');
+        if (!card) return;
+        var idx = parseInt(card.getAttribute('data-idx'), 10);
+        var id = card.getAttribute('data-id');
+        var resultEl = card.querySelector('.test-result');
+
+        if (e.target.classList.contains('btn-save-antenna')) {
+            var payload = readCard(card);
+            if (!payload.host || !payload.username) {
+                showResult(resultEl, 'Preencha ao menos Host/IP e Usuário.', true);
+                return;
+            }
+            e.target.disabled = true;
+            var req = id
+                ? fetch('/api/vehicle-antennas/' + id, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+                : fetch('/api/vehicle-antennas', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            req.then(function(r) { return r.json().then(function(j) { return { ok: r.ok, json: j }; }); })
+                .then(function(o) {
+                    if (!o.ok) { showResult(resultEl, o.json.message || 'Erro ao salvar.', true); return; }
+                    antennas[idx] = o.json;
+                    render();
+                })
+                .catch(function() { showResult(resultEl, 'Erro de conexão ao salvar.', true); })
+                .finally(function() { e.target.disabled = false; });
+        }
+
+        if (e.target.classList.contains('btn-remove-antenna')) {
+            if (!id) { antennas.splice(idx, 1); render(); return; }
+            if (!confirm('Remover esta antena? Isso não remove nada da antena física, só o cadastro aqui.')) return;
+            fetch('/api/vehicle-antennas/' + id, { method: 'DELETE' })
+                .then(function() { antennas.splice(idx, 1); render(); })
+                .catch(function() { showResult(resultEl, 'Erro ao remover.', true); });
+        }
+
+        if (e.target.classList.contains('btn-test-antenna') && id) {
+            e.target.disabled = true;
+            showResult(resultEl, 'Testando…', false);
+            fetch('/api/vehicle-antennas/' + id + '/test', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        showResult(resultEl, 'Conectado: ' + JSON.stringify(data.info), false);
+                    } else {
+                        showResult(resultEl, data.message || 'Falha ao conectar.', true);
+                    }
+                })
+                .catch(function() { showResult(resultEl, 'Erro de conexão.', true); })
+                .finally(function() { e.target.disabled = false; });
+        }
+    });
+
+    document.getElementById('addAntenna').addEventListener('click', function() {
+        antennas.push({ id: '', name: '', vendor: 'controlid', host: '', port: 80, username: '', password: '', gate_output: 'contact', door_id: 1, secbox_id: '', group_id: '', https: false, verify_tls: true, cockpit_enabled: true });
+        render();
+    });
+
+    fetch('/api/vehicle-antennas')
+        .then(function(r) { return r.json(); })
+        .then(function(data) { antennas = data; render(); })
+        .catch(function() { emptyHint.textContent = 'Erro ao carregar antenas.'; emptyHint.style.display = 'block'; });
+})();
+</script>
+{% endblock %}

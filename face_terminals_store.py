@@ -11,7 +11,7 @@ import uuid
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(BASE_DIR, "face_terminals.json")
 
-VENDORS = ("hikvision", "intelbras")
+VENDORS = ("hikvision", "intelbras", "intelbras_biot", "controlid")
 _DEFAULTS = {
     "name": "",
     "vendor": "hikvision",
@@ -23,6 +23,9 @@ _DEFAULTS = {
     "verify_tls": True,
     "relay_level": 0,  # Intelbras: NO-COM(0)/NC-COM(1), depende da fiação da instalação
     "cockpit_enabled": True,  # porteiro pode abrir esse terminal em /cockpit
+    # Control iD: grupo/departamento ao qual todo usuário criado por aqui é associado — sem
+    # isso o usuário fica sem regra de acesso nenhuma (validado ao vivo). "" = não associa.
+    "group_id": "",
 }
 
 
@@ -56,6 +59,8 @@ def _normalize(data: dict, existing: dict | None = None) -> dict:
             value = 1 if int(value or 0) == 1 else 0
         elif field == "vendor":
             value = value if value in VENDORS else "hikvision"
+        elif field == "group_id":
+            value = int(value) if str(value).strip() else ""
         else:
             value = str(value).strip()
         base[field] = value

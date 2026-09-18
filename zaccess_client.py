@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 
 import socketio
 
+import face_terminals_store
+import vehicle_antennas_store
 from face_agent import (
     EventsPoller,
     FaceProvisioningError,
@@ -23,10 +25,113 @@ from face_agent import (
     fetch_intelbras_biot_events_since,
     fetch_intelbras_events_since,
 )
+from face_agent.controlid_client import ControlIdClient
+from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
 from face_agent.hikvision_client import HikvisionClient
 from face_agent.intelbras_biot_client import IntelbrasBioTClient
 
 logger = logging.getLogger(__name__)
+
+# Ponte entre a thread do Socket.IO (run_zaccess_client, abaixo) e a thread do Flask
+# (app.py) — Control iD manda evento por webhook HTTP (push do próprio terminal/antena pro
+# zapy), não por poll como os outros vendors, então quem recebe é uma rota Flask, não um
+# EventsPoller. "face_clients"/"uhf_clients" são os mesmos dicts de sempre (criados uma
+# vez, sobrevivem a reconexões — só reapontam aqui uma vez). "emit" é reatribuído a cada
+# reconexão (fecha sobre o `sio` da vez); None enquanto não há conexão ativa ainda.
+_bridge: dict[str, object] = {"face_clients": None, "uhf_clients": None, "emit": None}
+
+
+def _local_controlid_client(terminal_id: str):
+    """Fallback pro webhook quando o terminal_id não está entre os que o ZAccess
+    sincronizou (device:config) — cobre terminal/antena cadastrado só localmente
+    (face_terminals_store/vehicle_antennas_store), sem ZAccess gerenciando. Sem cache:
+    webhook não é um caminho de alta frequência, um login a mais por evento não pesa."""
+    terminal = face_terminals_store.get_terminal(terminal_id)
+    if terminal and terminal.get("vendor") == "controlid":
+        return create_face_client(
+            "controlid", host=terminal["host"], port=terminal["port"],
+            username=terminal["username"], password=terminal["password"],
+            https=terminal["https"], verify_tls=terminal["verify_tls"],
+        )
+    antenna = vehicle_antennas_store.get_antenna(terminal_id)
+    if antenna:
+        return ControlIdUhfClient(ControlIdTerminal(
+            host=antenna["host"], port=antenna["port"],
+            username=antenna["username"], password=antenna["password"],
+            https=antenna["https"], verify_tls=antenna["verify_tls"],
+        ))
+    return None
+
+
+def submit_controlid_event(terminal_id: str, payload: dict, remote_addr: str | None = None) -> None:
+    """Chamado pela rota webhook em app.py quando um terminal facial OU uma antena UHF
+    Control iD chama de volta (new_user_identified.fcgi — o mesmo endpoint/evento carrega
+    face, cartão, qrcode ou tag UHF, diferenciados pelo campo populado no `access_log`
+    correspondente; aqui só nos importa `event`/`user_id`). Resolve employee_no a partir
+    do user_id numérico (o payload não manda a registration), normaliza pro formato comum
+    de evento e entrega pelo mesmo caminho dos pollers (persiste local, emite
+    face:identified se conectado).
+
+    event: 3=não identificado, 6=acesso negado, 7=acesso concedido (doc oficial,
+    modos-de-operacao/eventos-de-identificacao-online). Não validado contra hardware real
+    ainda — como os outros clients "primeira integração real" desse repo.
+
+    Sem assinatura documentada pelo fabricante pro lado do "servidor" (ver comentário em
+    app.py), então a mitigação possível é checar se quem chamou é o próprio IP cadastrado
+    pra esse terminal/antena — não impede spoofing de IP na mesma rede, mas barra qualquer
+    outro host na LAN de forjar evento pra um terminal_id que não é o dele."""
+    face_clients = _bridge.get("face_clients") or {}
+    uhf_clients = _bridge.get("uhf_clients") or {}
+    client = face_clients.get(terminal_id) or uhf_clients.get(terminal_id)
+    if client is None:
+        try:
+            client = _local_controlid_client(terminal_id)
+        except Exception as e:
+            logger.warning("ZAccess: falha ao montar client local pro webhook de %s - %s", terminal_id, e)
+    if not isinstance(client, (ControlIdClient, ControlIdUhfClient)):
+        logger.warning("ZAccess: webhook Control iD pra terminal desconhecido/não-controlid %s", terminal_id)
+        return
+    if remote_addr is not None and client.terminal.host != remote_addr:
+        logger.warning(
+            "ZAccess: webhook Control iD pra %s veio de %s, esperado %s - ignorado",
+            terminal_id, remote_addr, client.terminal.host,
+        )
+        return
+
+    event_code = payload.get("event")
+    user_id = payload.get("user_id")
+    success = event_code == 7
+    employee_no = None
+    if user_id is not None and event_code in (6, 7):
+        try:
+            employee_no = client.find_registration_by_id(int(user_id))
+        except Exception as e:
+            logger.warning("ZAccess: falha ao resolver registration do user_id %s em %s - %s", user_id, terminal_id, e)
+
+    ts = payload.get("time")
+    time_iso = datetime.fromtimestamp(int(ts), timezone(timedelta(hours=-3))).isoformat() if ts is not None else \
+        datetime.now(timezone(timedelta(hours=-3))).isoformat()
+    # Sem id de log no payload documentado — dedupe best-effort por timestamp+user+evento,
+    # mesmo espírito pragmático do "last N records" do Intelbras XPE (não é garantia
+    # absoluta contra duplicata, é o que dá pra fazer sem um id sequencial do terminal).
+    # "kind" decide, lá no emit, se vira face:identified (terminalId) ou plate:identified
+    # (antennaId) pro ZAccess — os dois handlers já existem em deviceSocket.js, o que faltava
+    # era o zapy diferenciar em vez de mandar tudo como face:identified.
+    kind = "vehicle" if isinstance(client, ControlIdUhfClient) else "face"
+    event = {
+        "dedupe_key": f"{terminal_id}:controlid:{ts}:{user_id}:{event_code}",
+        "terminal_id": terminal_id, "employee_no": employee_no, "time": time_iso,
+        "direction": "unknown", "success": success, "source": "webhook",
+        "picture": None, "device_name": None, "kind": kind,
+    }
+
+    emit = _bridge.get("emit")
+    if emit:
+        emit([event])
+    else:
+        logger.warning("ZAccess: evento Control iD recebido sem conexão ativa, persistindo só localmente: %s", event)
+        local_store = LocalStore()
+        local_store.add_events([event])
 
 # Versão do zapy_rasp em si (não é firmware de hardware) — mandada no handshake pra
 # aparecer na coluna "Firmware" do painel ZAccess em vez do default estático '1.0.0'
@@ -68,12 +173,15 @@ def run_zaccess_client(
     relay_id_by_channel: dict[int, str] = {}
     input_id_by_gpio: dict[int, str] = {}
     face_clients: dict[str, object] = {}  # terminalId -> HikvisionClient/IntelbrasClient
+    uhf_clients: dict[str, ControlIdUhfClient] = {}  # antennaId -> ControlIdUhfClient
     # Roster com agenda de horário e cursor de poll de eventos — sobrevive a reconexões e
     # a restart do processo (arquivo em disco), pra schedule_enforcer/events_poller
     # funcionarem mesmo com a nuvem fora do ar.
     local_store = LocalStore()
     event_pollers: dict[str, tuple[threading.Thread, threading.Event]] = {}
     reconnect_delay = RECONNECT_DELAY
+    _bridge["face_clients"] = face_clients  # dicts estáveis, reapontam uma vez só (ver _bridge acima)
+    _bridge["uhf_clients"] = uhf_clients
 
     while True:
         input_push_stop = threading.Event()
@@ -153,14 +261,31 @@ def run_zaccess_client(
             except Exception:
                 pass
 
-        def _emit_face_identified(events):
-            """Callback dos EventsPoller — log/auditoria, nunca autoriza nada (a decisão de
-            abrir já foi tomada localmente pelo terminal). Persiste local primeiro (alimenta o
-            painel "Eventos" mesmo se a nuvem estiver fora do ar), só depois tenta emitir."""
+        def _emit_identified_events(events):
+            """Callback dos EventsPoller (sempre face — Hikvision/Intelbras não têm "kind") e
+            do webhook Control iD (face OU antena UHF, "kind" decide) — log/auditoria, nunca
+            autoriza nada (a decisão de abrir já foi tomada localmente pelo terminal/antena).
+            Persiste local primeiro (alimenta o painel "Eventos" mesmo se a nuvem estiver fora
+            do ar), só depois tenta emitir. Dois contratos distintos no ZAccess (deviceSocket.js):
+            face:identified (terminalId) e plate:identified (antennaId) — mandar evento de
+            antena como face:identified faz o ZAccess não achar o FaceTerminal e descartar."""
             local_store.add_events(events)
             for event in events:
                 try:
-                    if sio.connected:
+                    if not sio.connected:
+                        continue
+                    if event.get("kind") == "vehicle":
+                        sio.emit(
+                            "plate:identified",
+                            {
+                                "antennaId": event["terminal_id"],
+                                "employeeNo": event["employee_no"],
+                                "success": event["success"],
+                                "timestamp": event["time"],
+                            },
+                            namespace=NAMESPACE,
+                        )
+                    else:
                         sio.emit(
                             "face:identified",
                             {
@@ -174,6 +299,8 @@ def run_zaccess_client(
                         )
                 except Exception:
                     pass
+
+        _bridge["emit"] = _emit_identified_events  # reatribuído a cada reconexão, fecha sobre o `sio` da vez
 
         def _sync_event_pollers():
             """(Re)inicia um EventsPoller por terminal facial configurado, parando os que
@@ -219,7 +346,7 @@ def run_zaccess_client(
                             event["picture"] = c.fetch_picture(url) if url else None
                         return events, next_cursor
                 poller = EventsPoller(local_store, tid, fetch)
-                thread, stop_evt = poller.start(_emit_face_identified, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
+                thread, stop_evt = poller.start(_emit_identified_events, interval_seconds=FACE_EVENTS_POLL_INTERVAL)
                 event_pollers[tid] = (thread, stop_evt)
 
         @sio.on("device:config", namespace=NAMESPACE)
@@ -251,16 +378,38 @@ def run_zaccess_client(
                         t["vendor"], host=t["host"], port=t.get("port") or 80,
                         username=t["username"], password=t["password"],
                         https=bool(t.get("https")), verify_tls=t.get("rejectUnauthorized", True) is not False,
-                        relay_level=t.get("relayLevel") or 0,
+                        relay_level=t.get("relayLevel") or 0, group_id=t.get("groupId"),
                     )
                 except Exception as e:
                     logger.error("ZAccess: falha ao configurar terminal facial %s - %s", tid, e)
 
+            uhf_clients.clear()
+            for a in data.get("vehicleAntennas") or []:
+                aid = a.get("id")
+                if not aid:
+                    continue
+                if a.get("name"):
+                    local_store.set_terminal_name(str(aid), a["name"])
+                try:
+                    uhf_clients[str(aid)] = ControlIdUhfClient(
+                        ControlIdTerminal(
+                            host=a["host"], port=a.get("port") or 80,
+                            username=a["username"], password=a["password"],
+                            https=bool(a.get("https")), verify_tls=a.get("rejectUnauthorized", True) is not False,
+                            group_id=a.get("groupId"),
+                        ),
+                        gate_output=a.get("gateOutput") or "contact",
+                        door_id=a.get("doorId") or 1,
+                        secbox_id=a.get("secboxId"),
+                    )
+                except Exception as e:
+                    logger.error("ZAccess: falha ao configurar antena UHF %s - %s", aid, e)
+
             _sync_event_pollers()
 
             logger.info(
-                "ZAccess: config recebida, relés: %s, inputs: %s, terminais faciais: %s",
-                list(relay_id_by_channel.keys()), list(input_id_by_gpio.keys()), list(face_clients.keys()),
+                "ZAccess: config recebida, relés: %s, inputs: %s, terminais faciais: %s, antenas UHF: %s",
+                list(relay_id_by_channel.keys()), list(input_id_by_gpio.keys()), list(face_clients.keys()), list(uhf_clients.keys()),
             )
             push_input_states()
             # Callbacks: envio instantâneo ao mudar GPIO (activated=inactive, deactivated=active para ZAccess)
@@ -506,6 +655,154 @@ def run_zaccess_client(
 
             threading.Thread(target=run, daemon=True).start()
 
+        def _emit_tag_ack(person_id: str, antenna_id: str, tag_code: str, status: str, error: str | None = None):
+            try:
+                if sio.connected:
+                    payload = {"personId": person_id, "antennaId": antenna_id, "tagCode": tag_code, "status": status}
+                    if error:
+                        payload["error"] = error
+                    sio.emit("tag:enroll-ack", payload, namespace=NAMESPACE)
+            except Exception:
+                pass
+
+        @sio.on("tag:enroll", namespace=NAMESPACE)
+        def tag_enroll(data):
+            """Servidor pede pra vincular uma tag UHF a uma antena — mesmo padrão do
+            card:enroll (credencial independente, ack em canal próprio)."""
+            person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
+            antenna_id = str(data.get("antennaId") or "")
+            name = data.get("name") or employee_no
+            tag_code = data.get("tagCode")
+            if not person_id or not antenna_id or not tag_code:
+                logger.warning("ZAccess: tag:enroll inválido - %s", data)
+                return
+
+            client = uhf_clients.get(antenna_id)
+            if not client:
+                logger.error("ZAccess: tag:enroll pra antena desconhecida %s", antenna_id)
+                threading.Thread(target=_emit_tag_ack, args=(person_id, antenna_id, tag_code, "failed", "antena não configurada neste zapy"), daemon=True).start()
+                return
+
+            def run():
+                try:
+                    client.enroll_tag(employee_no, name, tag_code)
+                    logger.info("ZAccess: tag UHF de %s cadastrada na antena %s", name, antenna_id)
+                    _emit_tag_ack(person_id, antenna_id, tag_code, "enrolled")
+                except Exception as e:
+                    logger.error("ZAccess: falha ao cadastrar tag UHF de %s na antena %s - %s", name, antenna_id, e)
+                    _emit_tag_ack(person_id, antenna_id, tag_code, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("tag:revoke", namespace=NAMESPACE)
+        def tag_revoke(data):
+            """Servidor pede pra remover uma tag UHF específica de uma antena."""
+            person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
+            antenna_id = str(data.get("antennaId") or "")
+            tag_code = data.get("tagCode")
+            if not person_id or not antenna_id or not tag_code:
+                logger.warning("ZAccess: tag:revoke inválido - %s", data)
+                return
+
+            client = uhf_clients.get(antenna_id)
+            if not client:
+                logger.error("ZAccess: tag:revoke pra antena desconhecida %s", antenna_id)
+                threading.Thread(target=_emit_tag_ack, args=(person_id, antenna_id, tag_code, "failed", "antena não configurada neste zapy"), daemon=True).start()
+                return
+
+            def run():
+                try:
+                    client.delete_tag(employee_no, tag_code)
+                    logger.info("ZAccess: tag UHF de %s removida da antena %s", employee_no, antenna_id)
+                    _emit_tag_ack(person_id, antenna_id, tag_code, "revoked")
+                except Exception as e:
+                    logger.error("ZAccess: falha ao remover tag UHF de %s na antena %s - %s", employee_no, antenna_id, e)
+                    _emit_tag_ack(person_id, antenna_id, tag_code, "failed", str(e))
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("vehicle_user:revoke", namespace=NAMESPACE)
+        def vehicle_user_revoke(data):
+            """Servidor pede pra apagar da antena o USUÁRIO inteiro (e toda tag/veículo
+            dele nela) — usado só quando o morador inteiro é excluído no ZAccess, mesmo
+            padrão decisivo do face:revoke (delete_user_info) no terminal facial. Diferente
+            de tag:revoke, que tira só UMA tag e nunca mexe no usuário (pessoa pode ter
+            mais de um veículo na mesma antena) — dois tipos de exclusão, não um efeito
+            colateral do outro."""
+            person_id = str(data.get("personId") or "")
+            employee_no = str(data.get("employeeNo") or person_id)
+            antenna_id = str(data.get("antennaId") or "")
+            if not person_id or not antenna_id:
+                logger.warning("ZAccess: vehicle_user:revoke inválido - %s", data)
+                return
+
+            client = uhf_clients.get(antenna_id)
+            if not client:
+                logger.error("ZAccess: vehicle_user:revoke pra antena desconhecida %s", antenna_id)
+                return
+
+            def run():
+                try:
+                    client.delete_user_info(employee_no)
+                    logger.info("ZAccess: usuário %s removido da antena %s", employee_no, antenna_id)
+                except Exception as e:
+                    logger.error("ZAccess: falha ao remover usuário %s da antena %s - %s", employee_no, antenna_id, e)
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("gate:open", namespace=NAMESPACE)
+        def gate_open(data):
+            """Servidor pede abertura remota da cancela vinculada a uma antena UHF —
+            comando administrativo direto, não passa pela leitura de tag. Mesmo padrão do
+            face:open-door."""
+            antenna_id = str(data.get("antennaId") or "")
+            by_app = data.get("byApp")
+            client = uhf_clients.get(antenna_id)
+            if not client:
+                logger.error("ZAccess: gate:open pra antena desconhecida %s", antenna_id)
+                return
+
+            def run():
+                result = client.open_gate()
+                try:
+                    if sio.connected:
+                        payload = {"antennaId": antenna_id, "status": "opened" if result.get("ok") else "failed"}
+                        if not result.get("ok"):
+                            payload["error"] = result.get("reason")
+                        if by_app:
+                            payload["byApp"] = by_app
+                        sio.emit("gate:open-ack", payload, namespace=NAMESPACE)
+                except Exception:
+                    pass
+                logger.info("ZAccess: abertura remota da antena %s -> %s", antenna_id, result)
+
+            threading.Thread(target=run, daemon=True).start()
+
+        @sio.on("antenna:reboot", namespace=NAMESPACE)
+        def antenna_reboot(data):
+            """Servidor pede reboot físico de uma antena UHF — mesmo padrão do face:reboot."""
+            antenna_id = str(data.get("antennaId") or "")
+            client = uhf_clients.get(antenna_id)
+            if not client:
+                logger.error("ZAccess: antenna:reboot pra antena desconhecida %s", antenna_id)
+                return
+
+            def run():
+                result = client.reboot_terminal()
+                try:
+                    if sio.connected:
+                        payload = {"antennaId": antenna_id, "status": "rebooted" if result.get("ok") else "failed"}
+                        if not result.get("ok"):
+                            payload["error"] = result.get("reason")
+                        sio.emit("antenna:reboot-ack", payload, namespace=NAMESPACE)
+                except Exception:
+                    pass
+                logger.info("ZAccess: reboot da antena %s -> %s", antenna_id, result)
+
+            threading.Thread(target=run, daemon=True).start()
+
         def _clear_and_resync_terminal(terminal_id: str, client) -> dict:
             """Zera o terminal (clear_all_users) e ressincroniza a partir do roster local
             (face + cartão) — devolve o device ao estado que o ZAccess já espera, sem
@@ -647,8 +944,8 @@ def run_zaccess_client(
             threading.Thread(target=run, daemon=True).start()
 
         def face_terminal_status_loop():
-            """Heartbeat de saúde dos terminais faciais — só os que têm check_health (Intelbras
-            hoje; Hikvision também expõe via System/deviceInfo)."""
+            """Heartbeat de saúde dos terminais faciais e antenas UHF — só os que têm
+            check_health (todos os vendors atuais têm)."""
             while not face_status_stop.is_set():
                 if face_status_stop.wait(timeout=FACE_TERMINAL_STATUS_INTERVAL):
                     break
@@ -666,6 +963,20 @@ def run_zaccess_client(
                         sio.emit(
                             "face:terminal-status",
                             {"terminalId": terminal_id, "status": status, "lastSeen": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                            namespace=NAMESPACE,
+                        )
+                    except Exception:
+                        pass
+                for antenna_id, client in list(uhf_clients.items()):
+                    try:
+                        client.check_health()
+                        status = "online"
+                    except Exception:
+                        status = "offline"
+                    try:
+                        sio.emit(
+                            "antenna:status",
+                            {"antennaId": antenna_id, "status": status, "lastSeen": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
                             namespace=NAMESPACE,
                         )
                     except Exception:

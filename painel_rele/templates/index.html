@@ -24,7 +24,7 @@
             <span class="card-title">Relé {{ id }}</span>
             <span class="badge {{ estado }}">{{ estado }}</span>
         </div>
-        <a href="/toggle/{{ id }}" class="btn-toggle {{ estado }}" data-action="toggle">{{ "DESLIGAR" if estado == "LIGADO" else "LIGAR" }}</a>
+        <button type="button" class="btn-toggle {{ estado }}" data-action="toggle">{{ "DESLIGAR" if estado == "LIGADO" else "LIGAR" }}</button>
         <p class="card-pulse {{ 'on' if pulse_sec != '0' else '' }}">Pulso: {{ pulse_sec + ' s' if pulse_sec != '0' else 'desativado' }}</p>
     </div>
     {% endfor %}
@@ -87,7 +87,7 @@
         var card = btn.closest('.card');
         var id = card.dataset.relay;
         btn.classList.add('loading');
-        fetch('/toggle/' + id, { redirect: 'manual' })
+        fetch('/toggle/' + id, { method: 'POST', redirect: 'manual' })
             .then(function() {
                 var isOn = card.classList.contains('LIGADO');
                 var pulseSec = parseFloat(card.dataset.pulse || '0') || 0;

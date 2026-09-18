@@ -14,18 +14,29 @@ Uso:
       --user admin --password senha --employee-no 123 --name "Fulano" --card-no AAABBB
   python -m face_agent.cli revoke-card --vendor hikvision --host 192.168.1.100 --user admin --password senha --employee-no 123 --card-no AAABBB
   python -m face_agent.cli clear-all --vendor intelbras_biot --host 192.168.1.101 --user admin --password senha
+  python -m face_agent.cli health    --vendor controlid --host 192.168.1.102 --user admin --password senha
+  python -m face_agent.cli enroll-tag --vendor controlid_uhf --host 192.168.1.103 \\
+      --user admin --password senha --employee-no 123 --name "Fulano" --tag-code E20012345
+  python -m face_agent.cli open-gate --vendor controlid_uhf --host 192.168.1.103 --user admin --password senha \\
+      --gate-output secbox --secbox-id 65793
 """
 import argparse
 import logging
 import sys
 
+from .controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
 from .face_client_factory import create_face_client
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+# Antena UHF não é um "face terminal" (não passa por create_face_client/VENDORS — ver
+# face_client_factory.py), mas o CLI trata como só mais um --vendor pra não duplicar toda
+# a estrutura de parsing/subcomandos por uma diferença de fábrica.
+UHF_VENDOR = "controlid_uhf"
+
 
 def _add_terminal_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--vendor", required=True, choices=["hikvision", "intelbras", "intelbras_biot"])
+    p.add_argument("--vendor", required=True, choices=["hikvision", "intelbras", "intelbras_biot", "controlid", UHF_VENDOR])
     p.add_argument("--host", required=True)
     p.add_argument("--port", type=int, default=None, help="padrão: 443 com --https, senão 80")
     p.add_argument("--user", required=True)
@@ -33,13 +44,23 @@ def _add_terminal_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--https", action="store_true")
     p.add_argument("--insecure", action="store_true", help="não valida certificado TLS (só em rede local confiável)")
     p.add_argument("--relay-level", type=int, default=0, choices=[0, 1], help="Intelbras: NO-COM(0)/NC-COM(1), depende da fiação")
+    p.add_argument("--gate-output", default="contact", choices=["contact", "secbox"], help="antena UHF: saída da cancela — contato da própria antena ou módulo SecBox externo")
+    p.add_argument("--door-id", type=int, default=1, help="antena UHF (gate-output=contact): número da porta/saída")
+    p.add_argument("--secbox-id", type=int, default=None, help="antena UHF (gate-output=secbox): id do objeto sec_boxs já cadastrado na antena")
+    p.add_argument("--group-id", type=int, default=None, help="Control iD (facial ou UHF): grupo/departamento pra associar usuário criado — sem isso ele fica sem regra de acesso")
 
 
 def _client_from_args(args: argparse.Namespace):
     port = args.port if args.port is not None else (443 if args.https else 80)
+    if args.vendor == UHF_VENDOR:
+        return ControlIdUhfClient(
+            ControlIdTerminal(host=args.host, port=port, username=args.user, password=args.password,
+                               https=args.https, verify_tls=not args.insecure, group_id=args.group_id),
+            gate_output=args.gate_output, door_id=args.door_id, secbox_id=args.secbox_id,
+        )
     return create_face_client(
         args.vendor, host=args.host, port=port, username=args.user, password=args.password,
-        https=args.https, verify_tls=not args.insecure, relay_level=args.relay_level,
+        https=args.https, verify_tls=not args.insecure, relay_level=args.relay_level, group_id=args.group_id,
     )
 
 
@@ -77,9 +98,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_health = sub.add_parser("health", help="checa se o terminal está respondendo")
     _add_terminal_args(p_health)
 
-    p_clear = sub.add_parser("clear-all", help="apaga TODOS os usuários/faces/cartões do terminal — destrutivo e irreversível")
+    p_clear = sub.add_parser("clear-all", help="apaga TODOS os usuários/faces/cartões/tags do terminal — destrutivo e irreversível")
     _add_terminal_args(p_clear)
     p_clear.add_argument("--yes", action="store_true", help="pula a confirmação interativa (uso em script)")
+
+    p_enroll_tag = sub.add_parser("enroll-tag", help="cadastra/atualiza uma tag UHF veicular na antena")
+    _add_terminal_args(p_enroll_tag)
+    p_enroll_tag.add_argument("--employee-no", required=True, help="chave externa estável do dono do veículo")
+    p_enroll_tag.add_argument("--name", required=True)
+    p_enroll_tag.add_argument("--tag-code", required=True, help="código da tag UHF do veículo")
+
+    p_revoke_tag = sub.add_parser("revoke-tag", help="remove uma tag UHF da antena")
+    _add_terminal_args(p_revoke_tag)
+    p_revoke_tag.add_argument("--employee-no", required=True)
+    p_revoke_tag.add_argument("--tag-code", required=True)
+
+    p_open_gate = sub.add_parser("open-gate", help="abre a cancela/portão remotamente (sem leitura de tag)")
+    _add_terminal_args(p_open_gate)
 
     return parser
 
@@ -131,18 +166,38 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "clear-all":
             if not args.yes:
                 answer = input(
-                    f"Isso vai apagar TODOS os usuários, faces e cartões do terminal "
+                    f"Isso vai apagar TODOS os usuários, faces, cartões e tags do terminal "
                     f"{args.vendor}@{args.host}. Não tem volta. Digite 'sim' para confirmar: "
                 )
                 if answer.strip().lower() != "sim":
                     print("Cancelado.")
                     return 1
-            result = client.clear_all_users()
+            clear = getattr(client, "clear_all_users", None) or getattr(client, "clear_all_tags", None)
+            result = clear()
             if isinstance(result, int):
                 print(f"OK: {result} usuário(s) removido(s)")
             else:
                 print("OK: terminal zerado")
             return 0
+
+        if args.command in ("enroll-tag", "revoke-tag", "open-gate") and args.vendor != UHF_VENDOR:
+            print(f"ERRO: comando '{args.command}' só é suportado com --vendor {UHF_VENDOR}")
+            return 1
+
+        if args.command == "enroll-tag":
+            status = client.enroll_tag(args.employee_no, args.name, args.tag_code)
+            print(f"OK: {status}")
+            return 0
+
+        if args.command == "revoke-tag":
+            client.delete_tag(args.employee_no, args.tag_code)
+            print("OK: tag removida")
+            return 0
+
+        if args.command == "open-gate":
+            result = client.open_gate()
+            print(result)
+            return 0 if result.get("ok") else 1
     except Exception as e:
         print(f"ERRO: {e}")
         return 1

@@ -127,6 +127,30 @@
             <p class="empty-hint">Nenhum terminal facial liberado pra esse usuário.</p>
             {% endif %}
         </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title panel-title-row">{{ icons.car() }}Antenas veiculares</span>
+                <span class="panel-sub">Control iD iDUHF</span>
+            </div>
+            <p class="panel-desc tight">Abertura remota da cancela/portão, sem depender do ZAccess estar no ar.</p>
+            <div class="door-grid" id="antennaGrid">
+                {% for a in antennas %}
+                <div class="door-card" data-antenna="{{ a.id }}">
+                    <div class="door-card-head">
+                        <span class="door-icon">{{ icons.car() }}</span>
+                        <span class="door-name">{{ a.name or a.host }}</span>
+                    </div>
+                    <span class="door-hint">{{ a.host }}</span>
+                    <button type="button" class="btn-open" data-action="open-antenna">{{ icons.key_round(15) }}Abrir</button>
+                    <div class="door-msg"></div>
+                </div>
+                {% endfor %}
+            </div>
+            {% if not antennas %}
+            <p class="empty-hint">Nenhuma antena veicular liberada pra esse usuário.</p>
+            {% endif %}
+        </div>
     </section>
 
     <section class="column">
@@ -191,6 +215,7 @@
             var card = btn.closest('.door-card');
             var msg = card.querySelector('.door-msg');
             var label = btn.lastChild;
+            var originalLabel = label.textContent;
             btn.disabled = true;
             msg.textContent = '';
             fetch(urlFn(card), { method: 'POST' })
@@ -200,7 +225,7 @@
                         label.textContent = 'Aberta ✓';
                         btn.classList.add('opened');
                         setTimeout(function() {
-                            label.textContent = btn.closest('#terminalGrid') ? 'Abrir porta' : 'Abrir';
+                            label.textContent = originalLabel;
                             btn.classList.remove('opened');
                             btn.disabled = false;
                         }, 2500);
@@ -217,6 +242,7 @@
     }
     bindOpenButtons('relayGrid', function(card) { return '/api/cockpit/relays/' + encodeURIComponent(card.dataset.relay) + '/open'; });
     bindOpenButtons('terminalGrid', function(card) { return '/api/cockpit/face-terminals/' + encodeURIComponent(card.dataset.terminal) + '/open'; });
+    bindOpenButtons('antennaGrid', function(card) { return '/api/cockpit/vehicle-antennas/' + encodeURIComponent(card.dataset.antenna) + '/open-gate'; });
 
     // --- eventos recentes (mesmo padrão de events.html) ---
     var container = document.getElementById('eventsList');

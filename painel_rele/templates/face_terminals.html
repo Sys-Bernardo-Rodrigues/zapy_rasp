@@ -32,6 +32,7 @@
     function cardHtml(t, idx) {
         var isNew = !t.id;
         var isIntelbras = t.vendor === 'intelbras';
+        var isControlId = t.vendor === 'controlid';
         return '' +
         '<div class="terminal-card" data-idx="' + idx + '" data-id="' + escapeHtml(t.id) + '">' +
             '<div class="field"><label>Nome</label><input class="f-name" value="' + escapeHtml(t.name) + '" placeholder="Catraca entrada"></div>' +
@@ -39,6 +40,8 @@
                 '<div class="field"><label>Fabricante</label><select class="f-vendor">' +
                     '<option value="hikvision"' + (isIntelbras ? '' : ' selected') + '>Hikvision (ISAPI)</option>' +
                     '<option value="intelbras"' + (isIntelbras ? ' selected' : '') + '>Intelbras XPE (HTTP API)</option>' +
+                    '<option value="intelbras_biot"' + (t.vendor === 'intelbras_biot' ? ' selected' : '') + '>Intelbras Bio-T/SS (cgi-bin)</option>' +
+                    '<option value="controlid"' + (t.vendor === 'controlid' ? ' selected' : '') + '>Control iD (Linha de Acesso)</option>' +
                 '</select></div>' +
                 '<div class="field"><label>Host/IP</label><input class="f-host" value="' + escapeHtml(t.host) + '" placeholder="192.168.1.100"></div>' +
             '</div>' +
@@ -46,7 +49,7 @@
                 '<div class="field"><label>Porta</label><input type="number" class="f-port" value="' + (t.port || 80) + '" min="1" max="65535"></div>' +
                 '<div class="field"><label>Usuário</label><input class="f-user" value="' + escapeHtml(t.username) + '" placeholder="admin"></div>' +
             '</div>' +
-            '<div class="field"><label>Senha</label><input type="password" class="f-password" value="' + (t.password === '********' ? '' : escapeHtml(t.password)) + '" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
+            '<div class="field"><label>Senha</label><input type="password" class="f-password" value="' + escapeHtml(t.password) + '" placeholder="' + (isNew ? '' : 'deixe em branco pra manter') + '"></div>' +
             '<div class="field relay-level-field" style="display:' + (isIntelbras ? 'block' : 'none') + '">' +
                 '<label>Nível do relé (Intelbras)</label>' +
                 '<select class="f-relay-level">' +
@@ -54,6 +57,11 @@
                     '<option value="1"' + (t.relay_level === 1 ? ' selected' : '') + '>1 — NC-COM</option>' +
                 '</select>' +
                 '<p class="hint">Depende de como o relé foi fiado na instalação — se a porta não abrir (ou abrir invertido), troque aqui.</p>' +
+            '</div>' +
+            '<div class="field controlid-group-field" style="display:' + (isControlId ? 'block' : 'none') + '">' +
+                '<label>Grupo/departamento (Control iD)</label>' +
+                '<input type="number" class="f-group-id" value="' + (t.group_id || '') + '" placeholder="Ex: 2">' +
+                '<p class="hint">ID do grupo já cadastrado no terminal ao qual todo usuário criado por aqui é associado — sem isso ele fica sem regra de acesso, mesmo cadastrado.</p>' +
             '</div>' +
             '<div class="checks">' +
                 '<label class="chk"><input type="checkbox" class="f-https"' + (t.https ? ' checked' : '') + '> HTTPS</label>' +
@@ -76,6 +84,7 @@
 
     function readCard(card) {
         var relaySelect = card.querySelector('.f-relay-level');
+        var groupIdInput = card.querySelector('.f-group-id');
         return {
             name: card.querySelector('.f-name').value.trim(),
             vendor: card.querySelector('.f-vendor').value,
@@ -87,6 +96,7 @@
             verify_tls: card.querySelector('.f-verify').checked,
             cockpit_enabled: card.querySelector('.f-cockpit').checked,
             relay_level: relaySelect ? parseInt(relaySelect.value, 10) : 0,
+            group_id: groupIdInput ? groupIdInput.value.trim() : '',
         };
     }
 
@@ -100,6 +110,7 @@
         if (e.target.classList.contains('f-vendor')) {
             var card = e.target.closest('.terminal-card');
             card.querySelector('.relay-level-field').style.display = e.target.value === 'intelbras' ? 'block' : 'none';
+            card.querySelector('.controlid-group-field').style.display = e.target.value === 'controlid' ? 'block' : 'none';
         }
     });
 
@@ -156,7 +167,7 @@
     });
 
     document.getElementById('addTerminal').addEventListener('click', function() {
-        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0 });
+        terminals.push({ id: '', name: '', vendor: 'hikvision', host: '', port: 80, username: '', password: '', https: false, verify_tls: true, cockpit_enabled: true, relay_level: 0, group_id: '' });
         render();
     });
 

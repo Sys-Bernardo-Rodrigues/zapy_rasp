@@ -2,6 +2,7 @@ import csv
 import io
 import os
 import logging
+import secrets
 import subprocess
 import threading
 import time
@@ -14,16 +15,41 @@ from functools import wraps
 load_dotenv()
 from gpiozero import OutputDevice, DigitalInputDevice
 
-from zaccess_client import start_zaccess_client_in_background
+from zaccess_client import start_zaccess_client_in_background, submit_controlid_event
 from config_env import read_config, get_config_for_display, write_config
 import face_terminals_store
+import vehicle_antennas_store
 import users_store
 from face_agent import FaceProvisioningError, LocalStore, create_face_client
+from face_agent.controlid_uhf_client import ControlIdTerminal, ControlIdUhfClient
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+def _load_or_create_secret_key() -> str:
+    """Sem valor padrão fixo de propósito: um literal hardcoded aqui vira uma chave
+    conhecida publicamente (está no repositório) — qualquer instalação que suba sem
+    ZAPY_SECRET_KEY setado ficaria assinando cookie de sessão com essa string, permitindo
+    forjar um cookie de admin sem nunca logar (ex.: flask-unsign). Gera uma chave aleatória
+    na primeira vez e persiste num arquivo local (fora do git) — reinícios seguintes reusam
+    a mesma, sem precisar o instalador editar nada manualmente."""
+    env_key = os.environ.get("ZAPY_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".secret_key")
+    if os.path.isfile(key_path):
+        with open(key_path, "r", encoding="utf-8") as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    new_key = secrets.token_hex(32)
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(new_key)
+    return new_key
+
+
 app = Flask(__name__, template_folder='painel_rele/templates')
-app.secret_key = os.environ.get("ZAPY_SECRET_KEY", "dev-zapy-secret")
+app.secret_key = _load_or_create_secret_key()
 
 # Mesmo arquivo SQLite (WAL) que zaccess_client.py escreve — conexão própria só de
 # leitura pro painel, não depende da thread do cliente ZAccess estar rodando.
@@ -220,13 +246,124 @@ def api_face_terminals_test(terminal_id):
             terminal["vendor"], host=terminal["host"], port=terminal["port"],
             username=terminal["username"], password=terminal["password"],
             https=terminal["https"], verify_tls=terminal["verify_tls"],
-            relay_level=terminal.get("relay_level", 0),
+            relay_level=terminal.get("relay_level", 0), group_id=terminal.get("group_id") or None,
         )
         return jsonify({"success": True, "info": client.check_health()})
     except FaceProvisioningError as e:
         return jsonify({"success": False, "message": str(e)}), 502
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/vehicle-antennas')
+@admin_required
+def vehicle_antennas_page():
+    """Cadastro das antenas veiculares (Control iD iDUHF) que este zapy fala diretamente
+    — mesmo papel de face_terminals_page, mas pra antenas."""
+    return render_template('vehicle_antennas.html')
+
+
+@app.route('/api/vehicle-antennas', methods=['GET'])
+@admin_required
+def api_vehicle_antennas_list():
+    return jsonify([vehicle_antennas_store.for_display(a) for a in vehicle_antennas_store.list_antennas()])
+
+
+@app.route('/api/vehicle-antennas', methods=['POST'])
+@admin_required
+def api_vehicle_antennas_create():
+    antenna = vehicle_antennas_store.create_antenna(request.get_json() or {})
+    return jsonify(vehicle_antennas_store.for_display(antenna)), 201
+
+
+@app.route('/api/vehicle-antennas/<antenna_id>', methods=['PUT'])
+@admin_required
+def api_vehicle_antennas_update(antenna_id):
+    antenna = vehicle_antennas_store.update_antenna(antenna_id, request.get_json() or {})
+    if antenna is None:
+        return jsonify({"success": False, "message": "antena não encontrada"}), 404
+    return jsonify(vehicle_antennas_store.for_display(antenna))
+
+
+@app.route('/api/vehicle-antennas/<antenna_id>', methods=['DELETE'])
+@admin_required
+def api_vehicle_antennas_delete(antenna_id):
+    if not vehicle_antennas_store.delete_antenna(antenna_id):
+        return jsonify({"success": False, "message": "antena não encontrada"}), 404
+    return jsonify({"success": True})
+
+
+def _uhf_client_from_stored(antenna: dict) -> ControlIdUhfClient:
+    return ControlIdUhfClient(
+        ControlIdTerminal(
+            host=antenna["host"], port=antenna["port"],
+            username=antenna["username"], password=antenna["password"],
+            https=antenna["https"], verify_tls=antenna["verify_tls"],
+            group_id=antenna.get("group_id") or None,
+        ),
+        gate_output=antenna.get("gate_output", "contact"),
+        door_id=antenna.get("door_id", 1),
+        secbox_id=antenna.get("secbox_id") or None,
+    )
+
+
+@app.route('/api/vehicle-antennas/<antenna_id>/test', methods=['POST'])
+@admin_required
+def api_vehicle_antennas_test(antenna_id):
+    """Mesmo papel de api_face_terminals_test, pra antena UHF."""
+    antenna = vehicle_antennas_store.get_antenna(antenna_id)
+    if antenna is None:
+        return jsonify({"success": False, "message": "antena não encontrada"}), 404
+    try:
+        client = _uhf_client_from_stored(antenna)
+        return jsonify({"success": True, "info": client.check_health()})
+    except FaceProvisioningError as e:
+        return jsonify({"success": False, "message": str(e)}), 502
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/cockpit/vehicle-antennas/<antenna_id>/open-gate', methods=['POST'])
+@login_required
+def api_cockpit_vehicle_antenna_open(antenna_id):
+    """Abertura remota da cancela direto na antena (local, não passa pelo ZAccess) — mesmo
+    caminho de api_cockpit_face_terminal_open, chamando open_gate()."""
+    antenna = vehicle_antennas_store.get_antenna(antenna_id)
+    if antenna is None:
+        return jsonify({"success": False, "message": "antena não encontrada"}), 404
+    if session.get("role") != "admin" and not antenna.get("cockpit_enabled", True):
+        return jsonify({"success": False, "message": "antena não liberada pro porteiro"}), 403
+    try:
+        client = _uhf_client_from_stored(antenna)
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+    result = client.open_gate()  # nunca lança — {"ok": bool, "reason"?: str}
+    if result.get("ok"):
+        now = datetime.now(timezone(timedelta(hours=-3)))
+        local_store.add_events([{
+            "dedupe_key": f"{antenna_id}:cockpit:{now.strftime('%Y%m%dT%H%M%S%f')}",
+            "terminal_id": antenna_id, "employee_no": None, "time": now.isoformat(),
+            "direction": "unknown", "success": True, "source": "cockpit",
+            "picture": None, "device_name": "Liberado pelo Cockpit",
+        }])
+        return jsonify({"success": True})
+    return jsonify({"success": False, "message": result.get("reason") or "falha ao abrir"}), 502
+
+
+@app.route('/webhooks/controlid/<terminal_id>/new_user_identified.fcgi', methods=['POST'])
+def controlid_webhook_user_identified(terminal_id):
+    """Callback que o próprio terminal Control iD chama (modo online/push, diferente dos
+    outros vendors que são poll — ver plano de integração, seção Control iD). O terminal
+    é configurado manualmente (painel web dele) apontando pra
+    http://<ip-deste-zapy>:<porta>/webhooks/controlid/<terminal_id>/new_user_identified.fcgi
+    — terminal_id é o id do FaceTerminal no ZAccess (o mesmo que aparece em device:config).
+    Sem auth aqui de propósito: a doc oficial não documenta nenhum mecanismo de assinatura
+    pro lado do "servidor"; mitigado com allowlist de IP (só aceita evento vindo do próprio
+    host cadastrado pro terminal_id) em submit_controlid_event.
+    Resposta no formato que a doc mostra o terminal esperando de volta."""
+    data = request.get_json(silent=True) or {}
+    submit_controlid_event(terminal_id, data, remote_addr=request.remote_addr)
+    return jsonify({"result": {"event": data.get("event"), "user_id": data.get("user_id")}})
 
 
 EVENTS_PAGE_SIZE_DEFAULT = 25
@@ -261,9 +398,10 @@ def _parse_pagination() -> tuple[int, int]:
 
 
 def _resolve_terminal_names() -> dict[str, str]:
-    """Nome de cada terminal — prioriza o nome vindo do ZAccess (device:config), cai pro
-    cadastro local (face_terminals_store), senão mostra o id cru."""
+    """Nome de cada terminal/antena — prioriza o nome vindo do ZAccess (device:config), cai
+    pro cadastro local (face_terminals_store/vehicle_antennas_store), senão mostra o id cru."""
     local_names = {t["id"]: (t.get("name") or t["id"]) for t in face_terminals_store.list_terminals()}
+    local_names.update({a["id"]: (a.get("name") or a["id"]) for a in vehicle_antennas_store.list_antennas()})
     ids = set(local_store.list_event_terminal_ids()) | set(local_names.keys())
     return {tid: (local_store.get_terminal_name(tid) or local_names.get(tid) or tid) for tid in ids}
 
@@ -381,7 +519,11 @@ def cockpit_page():
         face_terminals_store.for_display(t) for t in face_terminals_store.list_terminals()
         if is_admin or t.get("cockpit_enabled", True)
     ]
-    return render_template('cockpit.html', relays=relays, terminals=terminals)
+    antennas = [
+        vehicle_antennas_store.for_display(a) for a in vehicle_antennas_store.list_antennas()
+        if is_admin or a.get("cockpit_enabled", True)
+    ]
+    return render_template('cockpit.html', relays=relays, terminals=terminals, antennas=antennas)
 
 
 @app.route('/api/cockpit/relays/<id>/open', methods=['POST'])
@@ -423,7 +565,7 @@ def api_cockpit_face_terminal_open(terminal_id):
             terminal["vendor"], host=terminal["host"], port=terminal["port"],
             username=terminal["username"], password=terminal["password"],
             https=terminal["https"], verify_tls=terminal["verify_tls"],
-            relay_level=terminal.get("relay_level", 0),
+            relay_level=terminal.get("relay_level", 0), group_id=terminal.get("group_id") or None,
         )
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -537,7 +679,7 @@ def api_sensors():
     return jsonify(_sensor_status())
 
 
-@app.route('/toggle/<id>')
+@app.route('/toggle/<id>', methods=['POST'])
 @admin_required
 def toggle(id):
     if id not in reles:

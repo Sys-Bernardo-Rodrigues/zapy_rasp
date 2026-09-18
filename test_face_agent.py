@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 import face_terminals_store
+import vehicle_antennas_store
 from face_agent.errors import FaceProvisioningError
 from face_agent.events_poller import (
     EventsPoller,
@@ -22,6 +23,8 @@ from face_agent.events_poller import (
     fetch_intelbras_biot_events_since,
     fetch_intelbras_events_since,
 )
+from face_agent.controlid_client import ControlIdClient, ControlIdTerminal
+from face_agent.controlid_uhf_client import ControlIdUhfClient
 from face_agent.face_client_factory import create_face_client
 from face_agent.hikvision_client import MAX_CONSEC_AUTH_FAILURES, HikvisionClient, HikvisionTerminal
 from face_agent.intelbras_biot_client import IntelbrasBioTClient, IntelbrasBioTTerminal
@@ -372,6 +375,229 @@ class IntelbrasBioTClientTest(unittest.TestCase):
         self.assertEqual(self._client().fetch_picture("/pic/a.jpg"), JPEG)
 
 
+class ControlIdClientTest(unittest.TestCase):
+    def _client(self):
+        return ControlIdClient(ControlIdTerminal(host="10.0.0.4", port=80, username="admin", password="pw"))
+
+    LOGIN_OK = MagicMock(status_code=200, json=lambda: {"session": "sess1"})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_enroll_create(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,  # login.fcgi
+            MagicMock(status_code=200, json=lambda: {"users": []}),  # load_objects: não existe
+            MagicMock(status_code=200, json=lambda: {"ids": [42]}),  # create_objects
+            MagicMock(status_code=200, json=lambda: {"user_id": 42, "success": True}),  # user_set_image
+        ]
+        status = self._client().enroll_face("123", "Fulano", JPEG)
+        self.assertEqual(status, "created")
+        create_call = mock_post.call_args_list[2]
+        self.assertEqual(create_call.kwargs["json"]["object"], "users")
+        self.assertEqual(create_call.kwargs["json"]["values"][0]["registration"], "123")
+        image_call = mock_post.call_args_list[3]
+        self.assertEqual(image_call.kwargs["params"]["user_id"], 42)
+        self.assertEqual(image_call.kwargs["data"], JPEG)
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_enroll_update_when_already_exists(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,
+            MagicMock(status_code=200, json=lambda: {"users": [{"id": 7}]}),  # load_objects: já existe
+            MagicMock(status_code=200, json=lambda: {"user_id": 7, "success": True}),  # user_set_image
+        ]
+        status = self._client().enroll_face("123", "Fulano", JPEG)
+        self.assertEqual(status, "updated")
+        self.assertEqual(mock_post.call_count, 3)  # não chama create_objects
+
+    def test_enroll_rejects_invalid_image(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_face("123", "Fulano", b"not an image")
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_relogin_and_retry_on_failed_call(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,  # login inicial
+            MagicMock(status_code=401, text="sessão inválida"),  # load_objects falha
+            self.LOGIN_OK,  # relogin
+            MagicMock(status_code=200, json=lambda: {"users": []}),  # load_objects retry
+            MagicMock(status_code=200, json=lambda: {"ids": [1]}),
+            MagicMock(status_code=200, json=lambda: {"success": True}),
+        ]
+        status = self._client().enroll_face("123", "Fulano", JPEG)
+        self.assertEqual(status, "created")
+        self.assertEqual(mock_post.call_count, 6)
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_delete_user_info(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"changes": 1})]
+        self._client().delete_user_info("123")
+        destroy_call = mock_post.call_args_list[1]
+        self.assertEqual(destroy_call.kwargs["json"], {"object": "users", "where": {"users": {"registration": "123"}}})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_clear_all_users_deletes_by_id_batches(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,
+            MagicMock(status_code=200, json=lambda: {"users": [{"id": 1}, {"id": 2}]}),
+            MagicMock(status_code=200, json=lambda: {"changes": 2}),
+            MagicMock(status_code=200, json=lambda: {"users": []}),  # segunda página: vazio, encerra
+        ]
+        removed = self._client().clear_all_users()
+        self.assertEqual(removed, 2)
+        destroy_call = mock_post.call_args_list[2]
+        self.assertEqual(destroy_call.kwargs["json"]["where"], {"users": {"id": {"IN": [1, 2]}}})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_enroll_card_create(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,
+            MagicMock(status_code=200, json=lambda: {"users": []}),
+            MagicMock(status_code=200, json=lambda: {"ids": [42]}),
+            MagicMock(status_code=200, json=lambda: {"ids": [1]}),  # create_objects cards
+        ]
+        status = self._client().enroll_card("123", "Fulano", "998877")
+        self.assertEqual(status, "created")
+        card_call = mock_post.call_args_list[3]
+        # "cards".value não é o int cru de 24 bits — é FC<<32|CN (validado ao vivo, ver
+        # _card_value_from_wiegand26). 998877 = 0x0F3A9D -> fc=0x0F, cn=0x3A9D.
+        self.assertEqual(card_call.kwargs["json"], {"object": "cards", "values": [{"value": 64424525277, "user_id": 42}]})
+
+    def test_enroll_card_rejects_empty(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_card("123", "Fulano", "")
+
+    def test_enroll_card_rejects_out_of_range(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_card("123", "Fulano", str(0xFFFFFF + 1))
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_delete_card_no_op_when_user_missing(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"users": []})]
+        self._client().delete_card("123", "998877")  # não lança, idempotente
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_open_door_never_raises(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError("timeout")
+        result = self._client().open_door()
+        self.assertEqual(result, {"ok": False, "reason": "falha de rede ao logar em 10.0.0.4: timeout"})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_open_door_sends_execute_actions(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"actions": []})]
+        result = self._client().open_door()
+        self.assertEqual(result, {"ok": True})
+        action_call = mock_post.call_args_list[1]
+        self.assertEqual(action_call.kwargs["json"], {"actions": [{"action": "door", "parameters": "door=1"}]})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_find_registration_by_id(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"users": [{"registration": "123"}]})]
+        self.assertEqual(self._client().find_registration_by_id(42), "123")
+        load_call = mock_post.call_args_list[1]
+        self.assertEqual(load_call.kwargs["json"], {"object": "users", "fields": ["registration"], "where": {"users": {"id": 42}}})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_find_registration_by_id_returns_none_when_missing(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"users": []})]
+        self.assertIsNone(self._client().find_registration_by_id(42))
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_check_health(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"serial": "ABC123"})]
+        self.assertEqual(self._client().check_health()["serial"], "ABC123")
+
+
+class ControlIdUhfClientTest(unittest.TestCase):
+    def _client(self):
+        return ControlIdUhfClient(ControlIdTerminal(host="10.0.0.5", port=80, username="admin", password="pw"))
+
+    LOGIN_OK = MagicMock(status_code=200, json=lambda: {"session": "sess1"})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_enroll_tag_create(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,
+            MagicMock(status_code=200, json=lambda: {"users": []}),
+            MagicMock(status_code=200, json=lambda: {"ids": [7]}),
+            MagicMock(status_code=200, json=lambda: {"ids": [1]}),  # create_objects cards
+        ]
+        status = self._client().enroll_tag("123", "Fulano", "10558700")
+        self.assertEqual(status, "created")
+        tag_call = mock_post.call_args_list[3]
+        # A antena reconhece a leitura UHF pelo objeto "cards" (validado ao vivo — ver
+        # docstring do módulo). "value" não é o int cru de 24 bits (0xa11cec=10558700) — é
+        # FC<<32|CN (validado ao vivo contra cartões reais, ver _card_value_from_wiegand26):
+        # fc=0xa1=161, cn=0x1cec=7404 -> 691489742060 (exibido como "161,07404" no painel deles).
+        self.assertEqual(tag_call.kwargs["json"], {"object": "cards", "values": [{"value": 691489742060, "user_id": 7}]})
+
+    def test_enroll_tag_rejects_empty(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_tag("123", "Fulano", "")
+
+    def test_enroll_tag_rejects_non_decimal(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_tag("123", "Fulano", "E20012345")  # hex, não decimal
+
+    def test_enroll_tag_rejects_out_of_range(self):
+        with self.assertRaises(FaceProvisioningError):
+            self._client().enroll_tag("123", "Fulano", str(0xFFFFFF + 1))
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_delete_tag_no_op_when_user_missing(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"users": []})]
+        self._client().delete_tag("123", "10558700")  # não lança, idempotente
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_delete_tag_uses_cards_object(self, mock_post):
+        mock_post.side_effect = [
+            self.LOGIN_OK,
+            MagicMock(status_code=200, json=lambda: {"users": [{"id": 7}]}),
+            MagicMock(status_code=200, json=lambda: {"changes": 1}),
+        ]
+        self._client().delete_tag("123", "10558700")
+        destroy_call = mock_post.call_args_list[2]
+        self.assertEqual(destroy_call.kwargs["json"], {"object": "cards", "where": {"cards": {"user_id": 7, "value": 691489742060}}})
+        self.assertEqual(mock_post.call_count, 3)  # não mexe em `users` — delete_user_info é operação separada
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_open_gate_contact_default(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"actions": []})]
+        self.assertEqual(self._client().open_gate(), {"ok": True})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_open_gate_contact_uses_door_id(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"actions": []})]
+        client = ControlIdUhfClient(ControlIdTerminal(host="10.0.0.5", port=80, username="admin", password="pw"), door_id=2)
+        client.open_gate()
+        action_call = mock_post.call_args_list[1]
+        self.assertEqual(action_call.kwargs["json"], {"actions": [{"action": "door", "parameters": "door=2"}]})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_open_gate_secbox(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"actions": []})]
+        client = ControlIdUhfClient(
+            ControlIdTerminal(host="10.0.0.5", port=80, username="admin", password="pw"),
+            gate_output="secbox", secbox_id=65793,
+        )
+        self.assertEqual(client.open_gate(), {"ok": True})
+        action_call = mock_post.call_args_list[1]
+        self.assertEqual(action_call.kwargs["json"], {"actions": [{"action": "sec_box", "parameters": "id=65793, reason=3"}]})
+
+    def test_open_gate_secbox_without_id_fails_without_network(self):
+        client = ControlIdUhfClient(
+            ControlIdTerminal(host="10.0.0.5", port=80, username="admin", password="pw"),
+            gate_output="secbox",
+        )
+        self.assertEqual(client.open_gate(), {"ok": False, "reason": "secbox_id não configurado pra essa antena"})
+
+    @patch("face_agent.controlid_client.requests.post")
+    def test_check_health_shared_with_base(self, mock_post):
+        mock_post.side_effect = [self.LOGIN_OK, MagicMock(status_code=200, json=lambda: {"serial": "UHF001"})]
+        self.assertEqual(self._client().check_health()["serial"], "UHF001")
+
+
 class HikvisionClientTest(unittest.TestCase):
     def _client(self):
         return HikvisionClient(HikvisionTerminal(host="10.0.0.2", port=80, username="admin", password="pw"))
@@ -548,9 +774,11 @@ class FaceClientFactoryTest(unittest.TestCase):
         hik = create_face_client("hikvision", host="x", port=80, username="a", password="b")
         intel = create_face_client("intelbras", host="x", port=80, username="a", password="b")
         biot = create_face_client("intelbras_biot", host="x", port=80, username="a", password="b")
+        controlid = create_face_client("controlid", host="x", port=80, username="a", password="b")
         self.assertIsInstance(hik, HikvisionClient)
         self.assertIsInstance(intel, IntelbrasClient)
         self.assertIsInstance(biot, IntelbrasBioTClient)
+        self.assertIsInstance(controlid, ControlIdClient)
 
 
 class FaceTerminalsStoreTest(unittest.TestCase):
@@ -594,6 +822,73 @@ class FaceTerminalsStoreTest(unittest.TestCase):
     def test_invalid_vendor_falls_back_to_hikvision(self):
         created = face_terminals_store.create_terminal({"name": "X", "vendor": "acme", "host": "h", "username": "u", "password": "p"})
         self.assertEqual(created["vendor"], "hikvision")
+
+    def test_intelbras_biot_and_controlid_are_valid_vendors(self):
+        biot = face_terminals_store.create_terminal({"name": "X", "vendor": "intelbras_biot", "host": "h", "username": "u", "password": "p"})
+        self.assertEqual(biot["vendor"], "intelbras_biot")
+        controlid = face_terminals_store.create_terminal({"name": "Y", "vendor": "controlid", "host": "h", "username": "u", "password": "p"})
+        self.assertEqual(controlid["vendor"], "controlid")
+
+
+class VehicleAntennasStoreTest(unittest.TestCase):
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.remove(path)  # começa sem arquivo, igual ao primeiro uso real
+        self._patcher = patch.object(vehicle_antennas_store, "STORE_PATH", path)
+        self._patcher.start()
+        self._path = path
+
+    def tearDown(self):
+        self._patcher.stop()
+        if os.path.exists(self._path):
+            os.remove(self._path)
+
+    def test_create_list_update_delete_roundtrip(self):
+        created = vehicle_antennas_store.create_antenna(
+            {"name": "Portão", "vendor": "controlid", "host": "192.168.1.200", "port": 80, "username": "admin", "password": "segredo"}
+        )
+        self.assertTrue(created["id"])
+        self.assertEqual(vehicle_antennas_store.list_antennas(), [created])
+
+        updated = vehicle_antennas_store.update_antenna(created["id"], {"name": "Portão Principal", "password": "novo_segredo"})
+        self.assertEqual(updated["name"], "Portão Principal")
+        self.assertEqual(updated["password"], "novo_segredo")
+        self.assertEqual(updated["host"], "192.168.1.200")  # campo não enviado no update permanece
+
+        self.assertTrue(vehicle_antennas_store.delete_antenna(created["id"]))
+        self.assertEqual(vehicle_antennas_store.list_antennas(), [])
+
+    def test_update_with_masked_password_placeholder_keeps_existing_password(self):
+        created = vehicle_antennas_store.create_antenna({"name": "X", "host": "h", "username": "u", "password": "segredo_real"})
+        updated = vehicle_antennas_store.update_antenna(created["id"], {"name": "X2", "password": "********"})
+        self.assertEqual(updated["password"], "segredo_real")
+
+    def test_for_display_masks_password(self):
+        antenna = {"password": "segredo"}
+        self.assertEqual(vehicle_antennas_store.for_display(antenna)["password"], "********")
+
+    def test_invalid_vendor_falls_back_to_controlid(self):
+        created = vehicle_antennas_store.create_antenna({"name": "X", "vendor": "acme", "host": "h", "username": "u", "password": "p"})
+        self.assertEqual(created["vendor"], "controlid")
+
+    def test_gate_output_defaults_to_contact(self):
+        created = vehicle_antennas_store.create_antenna({"name": "X", "host": "h", "username": "u", "password": "p"})
+        self.assertEqual(created["gate_output"], "contact")
+        self.assertEqual(created["door_id"], 1)
+        self.assertEqual(created["secbox_id"], "")
+
+    def test_gate_output_secbox_stores_secbox_id_as_int(self):
+        created = vehicle_antennas_store.create_antenna({
+            "name": "X", "host": "h", "username": "u", "password": "p",
+            "gate_output": "secbox", "secbox_id": "65793",
+        })
+        self.assertEqual(created["gate_output"], "secbox")
+        self.assertEqual(created["secbox_id"], 65793)
+
+    def test_invalid_gate_output_falls_back_to_contact(self):
+        created = vehicle_antennas_store.create_antenna({"name": "X", "host": "h", "username": "u", "password": "p", "gate_output": "acme"})
+        self.assertEqual(created["gate_output"], "contact")
 
 
 class LocalStoreTest(unittest.TestCase):
