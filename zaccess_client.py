@@ -137,7 +137,7 @@ def submit_controlid_event(terminal_id: str, payload: dict, remote_addr: str | N
 # aparecer na coluna "Firmware" do painel ZAccess em vez do default estático '1.0.0'
 # do model (Device.metadata.firmware nunca era atualizado, mostrava sempre o mesmo
 # valor não importa o que estivesse rodando de verdade). Bump manual a cada release.
-ZAPY_VERSION = "1.1.0"
+ZAPY_VERSION = "1.9.0"
 
 NAMESPACE = "/devices"
 HEARTBEAT_INTERVAL = 30  # telemetria periódica (liveness = ping nativo Socket.IO)
